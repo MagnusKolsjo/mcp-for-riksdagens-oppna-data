@@ -1,0 +1,25 @@
+# Arbetsström 3 — Riksdagens öppna data API
+# Installera: pip install -r requirements.txt
+
+# MCP-server
+mcp>=1.0.0
+
+# HTTP-anrop mot riksdagens API
+httpx>=0.27.0
+
+# HTML-strippning
+beautifulsoup4>=4.12.0
+
+# Embeddingmodell (KBLab/sentence-bert-swedish-cased)
+sentence-transformers>=3.0.0
+
+# Konfiguration via .env
+python-dotenv>=1.0.0
+
+# Databasalternativ -- välj ett:
+
+# Alternativ A: PostgreSQL + pgvector (primär)
+psycopg2-binary>=2.9.0
+
+# Alternativ B: SQLite + sqlite-vec (enklare, ingen serverinstallation)
+# sqlite-vec>=0.1.0
