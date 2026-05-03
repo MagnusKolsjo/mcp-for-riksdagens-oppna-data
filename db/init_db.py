@@ -22,9 +22,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).parent / '.env')
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///riksdag_rag.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///riksdag_api.db")
 SCHEMA_DIR = Path(__file__).parent
 
 

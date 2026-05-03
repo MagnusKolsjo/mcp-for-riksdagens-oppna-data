@@ -6,6 +6,17 @@ Versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-05-03
+
+### Fixed
+- `mcp_server.py`, `document_store.py`, `db/init_db.py`: Laddar nu `.env` via
+  `Path(__file__).parent / '.env'` i stället för `load_dotenv()` utan argument.
+  Servern hittar sin konfiguration korrekt oavsett arbetskatalog vid uppstart.
+- `document_store.py`: Borttagen referens till den gamla databasen `riksdag_rag`
+  i docstring-exempel; uppdaterad till `riksdagstryck`.
+- `config.example.env`: SQLite-fallback döpt om från `riksdag_rag.db` till
+  `riksdag_api.db` för konsekvens med PostgreSQL-schemats namn.
+
 ## [1.2.0] — 2026-05-03
 
 ### Ändrat

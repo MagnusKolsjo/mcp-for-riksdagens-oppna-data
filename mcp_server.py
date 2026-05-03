@@ -37,6 +37,7 @@ import logging
 import os
 import re
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -45,7 +46,7 @@ from mcp.server.fastmcp import FastMCP
 
 from document_store import DocumentStore
 
-load_dotenv()
+load_dotenv(Path(__file__).parent / '.env')
 
 # ── Konfiguration ──────────────────────────────────────────────────────────────
 

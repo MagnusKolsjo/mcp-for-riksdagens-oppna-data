@@ -30,16 +30,17 @@ from typing import Optional
 
 import httpx
 from bs4 import BeautifulSoup
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).parent / '.env')
 
 # ---------------------------------------------------------------------------
 # Konfiguration
 # ---------------------------------------------------------------------------
 
 API_BASE        = os.getenv("RIKSDAG_API_BASE", "https://data.riksdagen.se")
-DATABASE_URL    = os.getenv("DATABASE_URL", "sqlite:///riksdag_rag.db")
+DATABASE_URL    = os.getenv("DATABASE_URL", "sqlite:///riksdag_api.db")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "KBLab/sentence-bert-swedish-cased")
 CACHE_MAX_GB    = int(os.getenv("CACHE_MAX_SIZE_GB", 2))
 CACHE_TTL_DAYS  = int(os.getenv("CACHE_TTL_CURRENT_SESSION_DAYS", 7))
@@ -143,8 +144,8 @@ class DocumentStore:
 
     Stöder PostgreSQL (primär) och SQLite (fallback) som lagringsbackend.
     Välj backend via DATABASE_URL i .env:
-        postgresql://user:password@localhost/riksdag_rag
-        sqlite:///riksdag_rag.db
+        postgresql://user:password@localhost/riksdagstryck
+        sqlite:///riksdag_api.db
     """
 
     def __init__(self) -> None:
