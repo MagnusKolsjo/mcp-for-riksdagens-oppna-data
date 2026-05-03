@@ -65,14 +65,19 @@ All konfiguration sker via `.env`-filen. Kopiera `config.example.env` till `.env
 
 **PostgreSQL** (rekommenderas):
 ```env
-DATABASE_URL=postgresql://user:password@localhost/riksdag_rag
+DATABASE_URL=postgresql://mitt_db_anvandare:byt_till_eget_starkt_losenord@localhost:5432/riksdag
 ```
+
+Tabellerna placeras i PostgreSQL-schemat `riksdag_api`, isolerat från andra
+arbetsströmmar som delar samma databasinstans. Schemat skapas automatiskt
+av `db/init_db.py`.
 
 **SQLite** (ingen serverinstallation krävs):
 ```env
 DATABASE_URL=sqlite:///riksdag_rag.db
 ```
-Avkommentera även `sqlite-vec` i `requirements.txt`.
+Avkommentera även `sqlite-vec` i `requirements.txt`. SQLite-filer ger
+naturlig isolation — ingen schemalogik behövs.
 
 ## Konfiguration av MCP-klient
 

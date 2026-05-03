@@ -41,6 +41,10 @@ def init_postgres(url: str) -> None:
     conn = psycopg2.connect(url)
     conn.autocommit = True
     with conn.cursor() as cur:
+        # Säkerställ att schemat finns innan schema_postgres.sql körs.
+        # Schemat skapas även i SQL-filen, men detta skyddar mot race conditions
+        # om init körs parallellt mot en annan process.
+        cur.execute("CREATE SCHEMA IF NOT EXISTS riksdag_api")
         cur.execute(schema)
     conn.close()
 
@@ -93,7 +97,7 @@ def migrate_add_related_hints(url: str) -> None:
             conn.autocommit = True
             with conn.cursor() as cur:
                 cur.execute("""
-                    ALTER TABLE documents
+                    ALTER TABLE riksdag_api.documents
                     ADD COLUMN IF NOT EXISTS related_hints TEXT
                 """)
             conn.close()

@@ -1,22 +1,39 @@
-"""
-mcp_server.py -- MCP-server for riksdagens oppna data (1867-idag)
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Magnus Kolsjö
+# Se LICENSE-filen i repots rot för fullständig licenstext.
 
-Exponerar foljande verktyg till MCP-kompatibla AI-verktyg:
-  rd_search                 -- Soker dokument via riksdagens API
-  rd_get_document           -- Hamtar och cachar ett dokument (RAG)
-  rd_search_in_document     -- Semantisk sokning inom ett dokument
-  rd_get_context            -- Kontextpaket: relaterade dokument per relationstyp
-  rd_get_anforanden         -- Hamtar debattinlagg med fulltext
-  rd_get_voteringar         -- Hamtar voteringsdata
-  rd_list_riksmoten         -- Listar tillgangliga riksmoten
-  rd_resolve_sfs            -- Slar upp SFS-nummer for en lag via namn
-  rd_search_ledamoter       -- Soker riksdagsledamoter pa namn, parti eller valkrets
-  rd_get_ledamot            -- Hamtar fullstandig profil for en ledamot
-  rd_get_ledamot_aktivitet  -- Hamtar en ledamots senaste anforanden och motioner
+"""
+mcp_server.py — MCP-server för riksdagens öppna data (1867–idag)
+
+Exponerar följande verktyg till MCP-kompatibla AI-verktyg:
+  rd_search                 — Söker dokument via riksdagens API
+  rd_get_document           — Hämtar och cachar ett dokument (RAG)
+  rd_search_in_document     — Semantisk sökning inom ett dokument
+  rd_get_context            — Kontextpaket: relaterade dokument per relationstyp
+  rd_get_anforanden         — Hämtar debattinlägg med fulltext
+  rd_get_voteringar         — Hämtar voteringsdata
+  rd_list_riksmoten         — Listar tillgängliga riksmöten
+  rd_resolve_sfs            — Slår upp SFS-nummer för en lag via namn
+  rd_search_ledamoter       — Söker riksdagsledamöter på namn, parti eller valkrets
+  rd_get_ledamot            — Hämtar fullständig profil för en ledamot
+  rd_get_ledamot_aktivitet  — Hämtar en ledamots senaste anföranden och motioner
+
+Transport-lägen (styrs via MCP_TRANSPORT i .env):
+
+  stdio (standard, lokal användning):
+    python3 mcp_server.py
+    MCP-klienten startar och hanterar processen direkt.
+
+  http (hostad driftsättning):
+    MCP_TRANSPORT=http python3 mcp_server.py
+    Servern lyssnar på MCP_HOST:MCP_PORT (standard 127.0.0.1:8000).
+    Sätt MCP_API_KEY för Bearer-token-autentisering.
+    I produktion: lägg en reverse proxy (t.ex. Nginx) framför servern.
 
 Konfiguration via .env (se config.example.env).
 """
 
+import logging
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -30,8 +47,23 @@ from document_store import DocumentStore
 
 load_dotenv()
 
+# ── Konfiguration ──────────────────────────────────────────────────────────────
+
 API_BASE  = os.getenv("RIKSDAG_API_BASE", "https://data.riksdagen.se")
 PAGE_SIZE = int(os.getenv("RIKSDAG_PAGE_SIZE", 10))
+
+# Transport och autentisering (regel 8 i projektstandarden)
+MCP_TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio").lower()
+MCP_HOST      = os.getenv("MCP_HOST",      "127.0.0.1")
+MCP_PORT      = int(os.getenv("MCP_PORT",  "8000"))
+MCP_API_KEY   = os.getenv("MCP_API_KEY",   "")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger(__name__)
 
 _store: Optional[DocumentStore] = None
 
@@ -216,8 +248,11 @@ def rd_get_context(dok_id: str) -> dict:
         protokolldebatt  -- Kammarprotokoll med debatten
         protokollbeslut  -- Kammarprotokoll med riksdagsbeslutet
         beslut_id        -- Voteringsprotokoll
-        svar             -- Svar pa skriftlig fraga eller interpellation
-        fraga            -- Ursprunglig fraga (for svarshandlingar)
+        frågesvar       -- Formellt skriftligt svar pa en skriftlig fraga (fr -> frs)
+        fråga            -- Ursprunglig skriftlig fraga (frs -> fr)
+        ipsvarid         -- Protokoll dar interpellationen besvarades i kammaren
+        GemensamtBesvarad -- Andra interpellationer besvarade vid samma tillfalle
+        GemensamtSvar    -- Gemensamt svar pa flera interpellationer
 
     Extra metadata (nar tillgangligt):
         motgrund     -- Propositionsbeteckning som en motion svarar pa
@@ -226,8 +261,11 @@ def rd_get_context(dok_id: str) -> dict:
         besvaradav   -- Statsrad som besvarar fragan/interpellationen
         stalldtill   -- Statsrad som fragan/interpellationen ar stalld till
 
-    OBS: Nyligen inlamnade fragor och interpellationer saknar svar tills
-    de besvarats. Kor rd_get_context igen efter att svar inkommit.
+    OBS: Svaret pa en interpellation ges muntligen i kammaren -- det finns
+    inget separat svars-dokument. Anvand ipsvarid-relationen for att hitta
+    protokollet dar debatten agde rum, och rd_search_in_document for att
+    hitta relevanta stycken i protokollet.
+    Nyligen inlamnade fragor saknar svar tills de besvarats.
     """
     return get_store().get_related(dok_id)
 
@@ -515,5 +553,75 @@ def rd_get_ledamot_aktivitet(
     }
 
 
+# ── HTTP-autentisering ────────────────────────────────────────────────────────
+
+def _make_auth_app(asgi_app, api_key: str):
+    """
+    Wrappa en ASGI-app med enkel Bearer-token-autentisering.
+    Alla anrop utan korrekt Authorization-header avvisas med HTTP 401.
+    """
+    from starlette.applications import Starlette
+    from starlette.middleware import Middleware
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Mount
+
+    class ApiKeyMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            token = (
+                request.headers.get("Authorization", "")
+                .removeprefix("Bearer ")
+                .strip()
+            )
+            if token != api_key:
+                return PlainTextResponse(
+                    "Obehörig: ogiltig eller saknad API-nyckel.", status_code=401
+                )
+            return await call_next(request)
+
+    return Starlette(
+        routes=[Mount("/", app=asgi_app)],
+        middleware=[Middleware(ApiKeyMiddleware)],
+    )
+
+
+# ── Startpunkt ────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    mcp.run()
+    if MCP_TRANSPORT == "http":
+        import uvicorn
+
+        # Preladda embedding-modellen vid uppstart så att första anropet svarar
+        # lika snabbt som efterföljande. Misslyckas modellen att laddas syns det
+        # direkt i loggarna — inte vid det första användaranropet.
+        log.info("Preladdar embedding-modell...")
+        get_store()._get_model()
+        log.info("Embedding-modell redo")
+
+        # Hämta ASGI-appen från FastMCP
+        try:
+            asgi_app = mcp.streamable_http_app()
+        except AttributeError:
+            # Äldre version av mcp-biblioteket
+            log.warning(
+                "mcp.streamable_http_app() saknas — försöker med sse_app(). "
+                "Uppgradera mcp-paketet om problem uppstår."
+            )
+            asgi_app = mcp.sse_app()
+
+        if MCP_API_KEY:
+            log.info("API-nyckelautentisering aktiverad")
+            app = _make_auth_app(asgi_app, MCP_API_KEY)
+        else:
+            log.warning(
+                "MCP_API_KEY är inte satt — servern körs utan autentisering. "
+                "Bind enbart till loopback (MCP_HOST=127.0.0.1) eller "
+                "skydda via reverse proxy."
+            )
+            app = asgi_app
+
+        log.info("Startar HTTP-transport på %s:%s", MCP_HOST, MCP_PORT)
+        uvicorn.run(app, host=MCP_HOST, port=MCP_PORT, log_level="info")
+    else:
+        log.info("Startar stdio-transport (lokal användning)")
+        mcp.run()

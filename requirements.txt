@@ -16,10 +16,14 @@ sentence-transformers>=3.0.0
 # Konfiguration via .env
 python-dotenv>=1.0.0
 
-# Databasalternativ -- välj ett:
+# Databasalternativ — välj ett:
 
 # Alternativ A: PostgreSQL + pgvector (primär)
 psycopg2-binary>=2.9.0
 
 # Alternativ B: SQLite + sqlite-vec (enklare, ingen serverinstallation)
 # sqlite-vec>=0.1.0
+
+# HTTP-transport (krävs för MCP_TRANSPORT=http)
+starlette>=0.40.0
+uvicorn>=0.30.0

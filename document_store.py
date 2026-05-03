@@ -61,16 +61,30 @@ _URL_SEGMENTS = {
 
 # Relationstyper från dokumentstatus XML som är meningsfulla för dokumentförståelse.
 # Typer som utesluts: föredragningslista, talarlista (administrativa dokument).
+#
+# Verifierade relationstyper (empiriskt kontrollerade mot live-API 2026-05-03):
+#   behandlas_i, följdmotion, behandlar, protokollbeslut, protokolldebatt, beslut_id
+#       → förekommer på prop/mot/bet-dokument
+#   frågesvar  → förekommer på fr (skriftlig fråga); pekar på frs-dokument (formellt svar)
+#   fråga      → förekommer på frs (frågesvar); pekar tillbaka på fr-dokument
+#   GemensamtBesvarad, GemensamtSvar
+#       → förekommer på ip (interpellation); pekar på andra ip som besvarats gemensamt
+#
+# OBS: Svaret på en interpellation ges muntligen i kammaren (kammarprotokoll),
+# inte som ett separat dokument. Separata svars-dokument (doktyp ipv) existerar inte.
+# Relationstypen "svar" och "interpellationssvar" förekommer inte i API:et.
 _RELEVANTA_RELATIONSTYPER = {
-    "behandlas_i",       # prop/mot → bet som behandlar dokumentet
-    "följdmotion",       # prop → motioner som följer på propositionen
-    "behandlar",         # bet → prop/mot som betänkandet behandlar
-    "protokollbeslut",   # bet → prot med riksdagsbeslut
-    "protokolldebatt",   # bet → prot med kammardebatten
-    "beslut_id",         # bet → voteringsprotokoll
-    "svar",              # fr/ip → svar på frågan/interpellationen
-    "fraga",             # svar → ursprunglig fråga
-    "interpellationssvar",  # ip → interpellationssvar
+    "behandlas_i",        # prop/mot → bet som behandlar dokumentet
+    "följdmotion",        # prop → motioner som följer på propositionen
+    "behandlar",          # bet → prop/mot som betänkandet behandlar
+    "protokollbeslut",    # bet → prot med riksdagsbeslut
+    "protokolldebatt",    # bet → prot med kammardebatten
+    "beslut_id",          # bet → voteringsprotokoll
+    "frågesvar",          # fr → frs: formellt skriftligt svar på skriftlig fråga
+    "fråga",              # frs → fr: tillbaka till den ursprungliga skriftliga frågan
+    "ipsvarid",           # ip → prot: protokoll där interpellationen besvarades i kammaren
+    "GemensamtBesvarad",  # ip → ip: andra interpellationer besvarade gemensamt
+    "GemensamtSvar",      # ip → ip: gemensamt svar på flera interpellationer
 }
 
 
@@ -392,7 +406,7 @@ class DocumentStore:
             conn = self._pg_conn()
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT is_current_session, cached_at FROM documents WHERE dok_id = %s",
+                    "SELECT is_current_session, cached_at FROM riksdag_api.documents WHERE dok_id = %s",
                     (dok_id,)
                 )
                 return cur.fetchone()
@@ -410,7 +424,7 @@ class DocumentStore:
         if self._db_type == "postgres":
             conn = self._pg_conn()
             with conn.cursor() as cur:
-                cur.execute(f"SELECT {cols} FROM documents WHERE dok_id = %s", (dok_id,))
+                cur.execute(f"SELECT {cols} FROM riksdag_api.documents WHERE dok_id = %s", (dok_id,))
                 row = cur.fetchone()
         else:
             conn = self._sqlite_conn()
@@ -441,7 +455,7 @@ class DocumentStore:
         conn = self._pg_conn()
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO documents
+                INSERT INTO riksdag_api.documents
                     (dok_id, doktyp, titel, datum, rm, status,
                      url_riksdagen, inledning, related_hints, cached_at, is_current_session)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
@@ -456,10 +470,10 @@ class DocumentStore:
                 raw["inledning"], raw.get("related_hints"), is_current,
             ))
 
-            cur.execute("DELETE FROM chunks WHERE dok_id = %s", (raw["dok_id"],))
+            cur.execute("DELETE FROM riksdag_api.chunks WHERE dok_id = %s", (raw["dok_id"],))
 
             psycopg2.extras.execute_values(cur, """
-                INSERT INTO chunks (dok_id, chunk_index, text, char_start, char_end, embedding)
+                INSERT INTO riksdag_api.chunks (dok_id, chunk_index, text, char_start, char_end, embedding)
                 VALUES %s
             """, [
                 (raw["dok_id"], i, c["text"], c["char_start"], c["char_end"],
@@ -476,7 +490,7 @@ class DocumentStore:
                 cur.execute("""
                     SELECT chunk_index, text, char_start, char_end,
                            1 - (embedding <=> %s::vector) AS score
-                    FROM   chunks
+                    FROM   riksdag_api.chunks
                     WHERE  dok_id = %s
                     ORDER  BY embedding <=> %s::vector
                     LIMIT  %s
