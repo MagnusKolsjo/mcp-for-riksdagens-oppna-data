@@ -6,6 +6,43 @@ Versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-05-06
+
+### Tillagt — exakt beteckningsfiltrering i `rd_search`
+
+`rd_search` har två nya parametrar och tre nya returfält som tillsammans
+löser problemet med att hitta dokument via deras formella citationsbeteckning
+(t.ex. `SOU 2025:106`, `prop. 2024/25:158`, `bet. 2024/25:FiU6`).
+
+**Nya parametrar:**
+
+- `beteckning` — exakt formell dokumentreferens. Splittras internt till
+  `rm` + `nummer`. Accepterar både kort form (`"2025:106"`) och prefixad
+  (`"SOU 2025:106"`, `"prop. 2024/25:158"`).
+- `nummer` — exakt nummer/beteckning inom ett rm. Används tillsammans med
+  `rm` när användaren redan har dem som separata värden. Skickas till
+  riksdagens API som `bet=` för doktyp `bet` (alfanumeriska beteckningar
+  som FiU6) och annars som `nr=`.
+
+**Nya returfält i `rd_search`-svar (och allt som använder `_format_doc`,
+inkl. `rd_get_ledamot_aktivitet`):**
+
+- `beteckning` — rådata från riksdagens API (`"106"`, `"FiU6"`, …)
+- `nummer` — synonym till `beteckning` (riksdagens API exponerar både)
+- `referens` — formaterad citering (`"SOU 2025:106"`, `"prop. 2024/25:158"`).
+  Härleds från doktyp + rm + beteckning enligt en intern prefixmapping.
+
+**rm-formatets dokumenttypsberoende dokumenterat i docstring:**
+
+- `prop`, `mot`, `bet`, `prot` använder riksmötesformat (`"2024/25"`)
+- `sou`, `ds`, `dir` använder kalenderår (`"2025"`)
+
+Detta var tidigare odokumenterat och en källa till misslyckade sökningar.
+
+**Inga brytande ändringar.** De nya returfälten läggs till; befintliga
+fält är oförändrade. Rena fritextsökningar (`query="..."`) fungerar exakt
+som tidigare.
+
 ## [2.0.0] — 2026-05-06
 
 ### Brytande ändringar — databas och MCP-svarsformat

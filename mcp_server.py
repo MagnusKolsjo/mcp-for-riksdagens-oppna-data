@@ -106,16 +106,71 @@ def _normalize_docs(dl: dict) -> list:
     return docs or []
 
 
+# Prefix som anvands nar en formell dokumentreferens byggs av rm + beteckning.
+# Exempel: ("sou", "2025", "106") -> "SOU 2025:106".
+_REFERENS_PREFIX = {
+    "prop": "prop.",
+    "mot":  "mot.",
+    "bet":  "bet.",
+    "prot": "prot.",
+    "sou":  "SOU",
+    "ds":   "Ds",
+    "dir":  "dir.",
+}
+
+
+def _formatera_referens(doktyp: str, rm: str, beteckning: str) -> str:
+    """Bygger formell dokumentreferens, t.ex. 'SOU 2025:106' eller 'prop. 2024/25:158'."""
+    if not rm or not beteckning:
+        return ""
+    prefix = _REFERENS_PREFIX.get((doktyp or "").lower(), (doktyp or "").lower())
+    return f"{prefix} {rm}:{beteckning}"
+
+
+def _dela_beteckning(beteckning: str) -> tuple[str, str]:
+    """
+    Splittrar en formell dokumentreferens till (rm, nummer).
+
+    Hanterar formaten:
+        "2025:106"          -> ("2025",    "106")
+        "2024/25:158"       -> ("2024/25", "158")
+        "2024/25:FiU6"      -> ("2024/25", "FiU6")
+        "SOU 2025:106"      -> ("2025",    "106")     -- prefix tas bort
+        "prop. 2024/25:158" -> ("2024/25", "158")
+
+    Om input inte kan tolkas returneras ("", "").
+    """
+    if not beteckning:
+        return "", ""
+    s = beteckning.strip()
+    # Ta bort vanliga prefix (skiftlagesokansligt) -- "SOU ", "prop. ", "Ds ", osv.
+    for prefix in ("SOU ", "Ds ", "Dir ", "dir. ", "prop. ", "prop ",
+                   "mot. ", "mot ", "bet. ", "bet ", "prot. ", "prot "):
+        if s.lower().startswith(prefix.lower()):
+            s = s[len(prefix):].strip()
+            break
+    if ":" not in s:
+        return "", ""
+    rm, _, nummer = s.partition(":")
+    return rm.strip(), nummer.strip()
+
+
 def _format_doc(doc: dict) -> dict:
-    dok_id = doc.get("dok_id", "")
-    doktyp = doc.get("doktyp", "")
+    dok_id     = doc.get("dok_id", "")
+    doktyp     = doc.get("doktyp", "")
+    rm         = doc.get("rm", "")
+    beteckning = doc.get("beteckning", "")
+    nummer     = doc.get("nummer", "") or beteckning
     result = {
-        "dok_id":  dok_id,
-        "doktyp":  doktyp,
-        "titel":   doc.get("titel", ""),
-        "datum":   doc.get("datum", ""),
-        "rm":      doc.get("rm", ""),
-        "url":     _riksdagen_url(dok_id, doktyp),
+        "dok_id":     dok_id,
+        "doktyp":     doktyp,
+        "titel":      doc.get("titel", ""),
+        "datum":      doc.get("datum", ""),
+        "rm":         rm,
+        "beteckning": beteckning,
+        "nummer":     nummer,
+        "referens":   _formatera_referens(doktyp, rm, beteckning),
+        "url":        _riksdagen_url(dok_id, doktyp),
     }
     if doc.get("status") == "ocr":
         result["ocr_varning"] = (
@@ -160,9 +215,11 @@ mcp = FastMCP("riksdag-oppna-data")
 def rd_search(
     query: str = "",
     doktyp: str = "",
+    beteckning: str = "",
     year_from: int = 0,
     year_to: int = 0,
     rm: str = "",
+    nummer: str = "",
     sz: int = 10,
 ) -> list[dict]:
     """
@@ -170,26 +227,59 @@ def rd_search(
     protokoll, SOU, Ds och kommittedirektiv.
 
     Parametrar:
-        query     -- Fritext (t.ex. "klimatlag" eller "ordningslag")
-        doktyp    -- Filtrera pa dokumenttyp: prop | mot | bet | prot | sou | ds | dir
-        year_from -- Tidigaste ar (t.ex. 1990)
-        year_to   -- Senaste ar (t.ex. 2024)
-        rm        -- Riksmote, t.ex. "2024/25"
-        sz        -- Antal traffar (max 100)
+        query      -- Fritext (t.ex. "klimatlag" eller "ordningslag")
+        doktyp     -- Filtrera pa dokumenttyp: prop | mot | bet | prot | sou | ds | dir
+        beteckning -- Exakt formell dokumentreferens, t.ex. "2025:106",
+                      "2024/25:158", "2024/25:FiU6". Aven prefixade former
+                      ("SOU 2025:106", "prop. 2024/25:158") accepteras.
+                      Splittras internt till rm + nummer/bet.
+        year_from  -- Tidigaste ar (t.ex. 1990)
+        year_to    -- Senaste ar (t.ex. 2024)
+        rm         -- Riksmote/ar. OBS olika format per dokumenttyp:
+                        prop, mot, bet, prot -> "2024/25" (riksmotesformat)
+                        sou, ds, dir         -> "2025"    (kalenderar)
+        nummer     -- Exakt nummer/beteckning inom ett rm. Anvands tillsammans
+                      med rm. For doktyp=bet (alfanumeriska beteckningar som
+                      "FiU6") skickas det som API-fel `bet`, annars som `nr`.
+        sz         -- Antal traffar (max 100)
 
-    Returnerar lista med dok_id, titel, datum, rm och lank till riksdagen.se.
-    Dokument med status ocr_varning ar inskannat material -- se PDF-originalet.
+    Returnerar lista med dok_id, doktyp, titel, datum, rm, beteckning, nummer,
+    referens (formaterad citering t.ex. "SOU 2025:106") och lank till
+    riksdagen.se. Dokument med status ocr_varning ar inskannat material --
+    se PDF-originalet.
 
-    Tips: For att hitta alla foljdmotioner till en proposition, sok med
-    propositionens beteckning som query, t.ex. query="prop 2025/26:158" med
-    doktyp="mot". Anvand rd_get_context for fullstandig relationsoversikt.
+    Tips:
+      * For exakt uppslag pa SOU 2025:106 skriv beteckning="2025:106" och
+        doktyp="sou" -- API:et returnerar exakt 1 traff. Detta ar mycket
+        robustare an fritextsok som kan ge ihopblandade nummer.
+      * For att hitta alla foljdmotioner till en proposition, sok med
+        propositionens beteckning som query, t.ex. query="prop 2025/26:158"
+        med doktyp="mot".
+      * For fullstandig relationsoversikt: anvand rd_get_context.
     """
     params: dict = {"sz": min(sz, 100)}
     if query:     params["sok"]    = query
     if doktyp:    params["doktyp"] = doktyp
-    if rm:        params["rm"]     = rm
-    if year_from: params["from"]   = f"{year_from}-01-01"
-    if year_to:   params["tom"]    = f"{year_to}-12-31"
+
+    # Beteckning kan ange bade rm och nummer pa en gang ("2025:106").
+    # Direkta parametrar (rm, nummer) overskrider beteckningens delar.
+    bet_rm, bet_nr = _dela_beteckning(beteckning)
+    effektivt_rm  = rm or bet_rm
+    effektivt_nr  = nummer or bet_nr
+
+    if effektivt_rm:
+        params["rm"] = effektivt_rm
+
+    if effektivt_nr:
+        # Betankanden har alfanumeriska beteckningar (FiU6, KU1) som maste
+        # skickas via API-faltet `bet`. Ovriga doktyper anvander `nr`.
+        if (doktyp or "").lower() == "bet" or not effektivt_nr.isdigit():
+            params["bet"] = effektivt_nr
+        else:
+            params["nr"]  = effektivt_nr
+
+    if year_from: params["from"] = f"{year_from}-01-01"
+    if year_to:   params["tom"]  = f"{year_to}-12-31"
 
     data = _get_json("/dokumentlista/", params)
     dl   = data["dokumentlista"]
