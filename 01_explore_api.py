@@ -64,7 +64,7 @@ def test_dokumentlista():
     dl = data["dokumentlista"]
 
     print(f"  API-version : {dl['@version']}")
-    print(f"  Totalt      : {dl['@traffar']} träffar")
+    print(f"  Totalt      : {dl['@traffar']} traffar")
     print(f"  Sida        : {dl['@sida']} av {dl['@sidor']}")
     print(f"  Träff       : {dl['@traff_fran']}–{dl['@traff_till']}")
     print(f"  Nästa sida  : {dl.get('@nasta_sida', '—')}")
@@ -127,7 +127,7 @@ def test_protokoll_1867():
         "sz":     3,
     })
     dl = data["dokumentlista"]
-    print(f"  Protokoll 1867: {dl['@traffar']} träffar")
+    print(f"  Protokoll 1867: {dl['@traffar']} traffar")
 
     docs = dl.get("dokument", [])
     if isinstance(docs, dict):
@@ -194,7 +194,7 @@ def test_paginering():
 # Test 6: Fritextsökning
 # ---------------------------------------------------------------------------
 
-def test_fritextsökning(query: str = "klimatlag"):
+def test_fritextsokning(query: str = "klimatlag"):
     print_section(f"Test 6: Fritextsökning — '{query}'")
     data = get_json("/dokumentlista/", {"sok": query, "sz": 5})
     dl = data["dokumentlista"]
@@ -275,7 +275,7 @@ if __name__ == "__main__":
         test_protokoll_1867()
         test_enskilt_dokument("C09C516")   # Protokoll Första kammaren, 16 maj 1867
         test_paginering()
-        test_fritextsökning("klimatlag")
+        test_fritextsokning("klimatlag")
         test_anforanden()
         test_voteringar()
 

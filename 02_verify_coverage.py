@@ -79,14 +79,14 @@ def test_sfs():
     sfs_falt = set()
     hittade  = 0
 
-    for namn, forväntat in TESTFALL:
-        print(f"  [{namn} / SFS {forväntat}]")
+    for namn, forvantat in TESTFALL:
+        print(f"  [{namn} / SFS {forvantat}]")
 
         # Sok pa lagnamnet
         data = get_json("/dokumentlista/", {"sok": namn, "sz": 10})
         docs = normalize(data["dokumentlista"])
-        träffar = data["dokumentlista"].get("@träffar", "?")
-        print(f"    Sökning '{namn}': {träffar} träffar totalt")
+        traffar = data["dokumentlista"].get("@traffar", "?")
+        print(f"    Sökning '{namn}': {traffar} traffar totalt")
 
         hittad = False
         for doc in docs:
@@ -97,8 +97,8 @@ def test_sfs():
                 print(f"    {OK} SFS-relaterade fält: {sfs_rel}")
                 hittad = True
                 break
-            if forväntat in json.dumps(doc, ensure_ascii=False):
-                print(f"    {OK} SFS {forväntat} finns i ett svarsfalt")
+            if forvantat in json.dumps(doc, ensure_ascii=False):
+                print(f"    {OK} SFS {forvantat} finns i ett svarsfalt")
                 hittad = True
                 break
 
@@ -108,10 +108,10 @@ def test_sfs():
                 print(f"    Tillgängliga fält: {sorted(docs[0].keys())}")
 
         # Sok direkt pa SFS-numret
-        data2 = get_json("/dokumentlista/", {"sok": forväntat, "sz": 3})
+        data2 = get_json("/dokumentlista/", {"sok": forvantat, "sz": 3})
         docs2 = normalize(data2["dokumentlista"])
-        träffar2 = data2["dokumentlista"].get("@träffar", "?")
-        print(f"    Sökning '{forväntat}': {träffar2} träffar")
+        traffar2 = data2["dokumentlista"].get("@traffar", "?")
+        print(f"    Sökning '{forvantat}': {traffar2} traffar")
         for d in docs2[:2]:
             print(f"      [{d.get('doktyp','?')}] {d.get('titel','?')[:70]}")
         print()
@@ -140,14 +140,14 @@ def test_kedja():
 
     data = get_json("/dokumentlista/", {"sok": "1992/93:210", "doktyp": "bet", "sz": 5})
     docs = normalize(data["dokumentlista"])
-    print(f"  Betänkanden som nämner '1992/93:210': {data['dokumentlista'].get('@träffar', 0)}")
+    print(f"  Betänkanden som nämner '1992/93:210': {data['dokumentlista'].get('@traffar', 0)}")
     for doc in docs[:3]:
         print(f"    [{doc.get('doktyp','?')}] {doc.get('datum','')} -- {doc.get('titel','?')[:65]}")
         print(f"      dok_id: {doc.get('dok_id','?')}")
 
     data2 = get_json("/dokumentlista/", {"sok": "ordningslag", "doktyp": "rskr", "sz": 3})
-    träffar2 = data2["dokumentlista"].get("@träffar", "?")
-    print(f"  Riksdagsskrivelser om ordningslag: {träffar2} träffar")
+    traffar2 = data2["dokumentlista"].get("@traffar", "?")
+    print(f"  Riksdagsskrivelser om ordningslag: {traffar2} traffar")
     for doc in normalize(data2["dokumentlista"])[:2]:
         print(f"    {doc.get('datum','')} -- {doc.get('titel','?')[:65]}")
 

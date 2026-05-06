@@ -203,7 +203,7 @@ def rd_get_document(dok_id: str) -> dict:
     Hamtar ett riksdagsdokument och cachar det lokalt for semantisk sokning.
 
     Returnerar metadata, de forsta 500 tecknen av fulltexten (inledning),
-    en lank till riksdagen.se samt related_hints -- en lista med direkt
+    en lank till riksdagen.se samt relaterat_tips -- en lista med direkt
     relaterade dokument (foljdmotioner, behandlande betankande, protokoll m.m.)
     hamtad fran riksdagens dokumentstatus-endpoint.
 

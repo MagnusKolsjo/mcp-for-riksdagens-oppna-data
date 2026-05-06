@@ -87,7 +87,7 @@ def init_sqlite(url: str) -> None:
 
 def migrate_add_related_hints(url: str) -> None:
     """
-    Lägger till kolumnen related_hints om den saknas (migrering av befintlig databas).
+    Lägger till kolumnen relaterat_tips om den saknas (migrering av befintlig databas).
     Säker att köra flera gånger — kolumnen läggs inte till om den redan finns.
     """
     if url.startswith("postgresql://") or url.startswith("postgres://"):
@@ -97,11 +97,11 @@ def migrate_add_related_hints(url: str) -> None:
             conn.autocommit = True
             with conn.cursor() as cur:
                 cur.execute("""
-                    ALTER TABLE riksdag_api.documents
-                    ADD COLUMN IF NOT EXISTS related_hints TEXT
+                    ALTER TABLE riksdag_api.dokument
+                    ADD COLUMN IF NOT EXISTS relaterat_tips TEXT
                 """)
             conn.close()
-            print("PostgreSQL: related_hints kolumn OK.")
+            print("PostgreSQL: relaterat_tips kolumn OK.")
         except Exception as e:
             print(f"PostgreSQL-migrering misslyckades: {e}", file=sys.stderr)
     elif url.startswith("sqlite:///"):
@@ -110,13 +110,13 @@ def migrate_add_related_hints(url: str) -> None:
             db_path = url.replace("sqlite:///", "")
             conn = _sq.connect(db_path)
             # SQLite stöder inte IF NOT EXISTS i ALTER TABLE — kontrollera manuellt
-            cols = [r[1] for r in conn.execute("PRAGMA table_info(documents)").fetchall()]
-            if "related_hints" not in cols:
-                conn.execute("ALTER TABLE documents ADD COLUMN related_hints TEXT")
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(dokument)").fetchall()]
+            if "relaterat_tips" not in cols:
+                conn.execute("ALTER TABLE dokument ADD COLUMN relaterat_tips TEXT")
                 conn.commit()
-                print("SQLite: related_hints kolumn tillagd.")
+                print("SQLite: relaterat_tips kolumn tillagd.")
             else:
-                print("SQLite: related_hints kolumn finns redan.")
+                print("SQLite: relaterat_tips kolumn finns redan.")
             conn.close()
         except Exception as e:
             print(f"SQLite-migrering misslyckades: {e}", file=sys.stderr)

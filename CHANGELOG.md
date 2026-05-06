@@ -6,6 +6,58 @@ Versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-05-06
+
+### Brytande ändringar — databas och MCP-svarsformat
+
+**Databas-rename i schemat `riksdag_api`** — kräver migration via
+`db/migration_v2_0_0.sql`. Skriptet är idempotent och säkert att köra om.
+
+Tabeller:
+- `documents` → `dokument`
+
+(Tabellen `chunks` behålls — vedertagen AI-vokabulär.)
+
+Kolumner i `riksdag_api.dokument`:
+- `cached_at` → `cachad_vid`
+- `is_current_session` → `aktuellt_riksmote`
+- `related_hints` → `relaterat_tips`
+
+Kolumner i `riksdag_api.chunks`:
+- `char_start` → `tecken_start`
+- `char_end` → `tecken_slut`
+
+**MCP-svarsformat** — JSON-fältnamn i verktygens svar matchar nu kolumnnamnen.
+Klienter som tidigare läste `cached_at`, `related_hints`, `char_start`, `char_end`
+i svaren måste uppdateras till `cachad_vid`, `relaterat_tips`, `tecken_start`,
+`tecken_slut`.
+
+**Python-identifierare** — 7 unika identifierare med å/ä/ö flyttade till
+ASCII-svenska. Berörda filer: `01_explore_api.py`, `02_verify_coverage.py`,
+`03_explore_dokumentstatus.py` (utforskningsskript). Bland byten:
+- `hämta_dokumentstatus_xml` → `hamta_dokumentstatus_xml`
+- `skriv_fält_rekursivt` → `skriv_falt_rekursivt`
+- `test_fritextsökning` → `test_fritextsokning`
+- `forväntat` → `forvantat`, `träffar`/`träffar2` → `traffar`/`traffar2`, `värden` → `varden`
+
+Kärnkoden (`mcp_server.py`, `document_store.py`, `db/init_db.py`,
+`migrate_to_riksdagstryck.py`) hade inga identifierare med å/ä/ö —
+bara SQL-strängar och returvärden behövde uppdateras.
+
+**MCP-tool-parametrar** — alla redan ASCII-svenska eller engelska. Stream 03
+har aldrig varit drabbat av JSON Schema-hypotesen som gällde stream 09.
+Den separata "rd_search saknas"-rapporten har annan orsak (utreds separat).
+
+### Tekniskt
+
+- Ny `db/migration_v2_0_0.sql` med PL/pgSQL-helperfunktioner
+  `pg_temp.byt_tabell` och `pg_temp.byt_kolumn` (idempotent).
+- `db/schema_postgres.sql` och `db/schema_sqlite.sql` uppdaterade —
+  nya installationer skapas direkt med svenska namn.
+- `migrate_to_riksdagstryck.py` orörd vad gäller `public.documents` —
+  det är en historisk källtabell från pre-1.2.0 som inte ska renas.
+
+
 ## [1.2.1] - 2026-05-03
 
 ### Fixed

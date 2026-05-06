@@ -12,9 +12,9 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE SCHEMA IF NOT EXISTS riksdag_api;
 
 -- ---------------------------------------------------------------------------
--- documents: ett cachat dokument från riksdagens API
+-- dokument: ett cachat dokument från riksdagens API
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS riksdag_api.documents (
+CREATE TABLE IF NOT EXISTS riksdag_api.dokument (
     dok_id              TEXT        PRIMARY KEY,
     doktyp              TEXT        NOT NULL,           -- prop, mot, bet, prot, sou, ds, dir
     titel               TEXT,
@@ -23,25 +23,25 @@ CREATE TABLE IF NOT EXISTS riksdag_api.documents (
     status              TEXT,                           -- 'ocr' för inskannat material, annars NULL
     url_riksdagen       TEXT,                           -- länk till www.riksdagen.se
     inledning           TEXT,                           -- de första ~500 tecknen av fulltexten
-    cached_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    is_current_session  BOOLEAN     NOT NULL DEFAULT FALSE, -- TRUE = innevarande riksmöte (har TTL)
-    related_hints       TEXT                            -- JSON: lista av relaterade dokument från dokumentstatus-endpointen
+    cachad_vid           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    aktuellt_riksmote  BOOLEAN     NOT NULL DEFAULT FALSE, -- TRUE = innevarande riksmöte (har TTL)
+    relaterat_tips       TEXT                            -- JSON: lista av relaterade dokument från dokumentstatus-endpointen
 );
 
-CREATE INDEX IF NOT EXISTS idx_documents_doktyp ON riksdag_api.documents (doktyp);
-CREATE INDEX IF NOT EXISTS idx_documents_rm     ON riksdag_api.documents (rm);
-CREATE INDEX IF NOT EXISTS idx_documents_datum  ON riksdag_api.documents (datum);
+CREATE INDEX IF NOT EXISTS idx_documents_doktyp ON riksdag_api.dokument (doktyp);
+CREATE INDEX IF NOT EXISTS idx_documents_rm     ON riksdag_api.dokument (rm);
+CREATE INDEX IF NOT EXISTS idx_documents_datum  ON riksdag_api.dokument (datum);
 
 -- ---------------------------------------------------------------------------
 -- chunks: textstycken (~800 tecken) ur ett cachat dokument
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS riksdag_api.chunks (
     id          BIGSERIAL   PRIMARY KEY,
-    dok_id      TEXT        NOT NULL REFERENCES riksdag_api.documents (dok_id) ON DELETE CASCADE,
+    dok_id      TEXT        NOT NULL REFERENCES riksdag_api.dokument (dok_id) ON DELETE CASCADE,
     chunk_index INTEGER     NOT NULL,                   -- ordningsnummer inom dokumentet
     text        TEXT        NOT NULL,
-    char_start  INTEGER,                                -- position i originaltexten
-    char_end    INTEGER,
+    tecken_start  INTEGER,                                -- position i originaltexten
+    tecken_slut    INTEGER,
     embedding   vector(768)                             -- KBLab/sentence-bert-swedish-cased → 768 dim
 );
 

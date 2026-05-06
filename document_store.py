@@ -109,8 +109,8 @@ def _chunk_text(text: str) -> list[dict]:
         end = start + CHUNK_SIZE
         chunks.append({
             "text":       text[start:end],
-            "char_start": start,
-            "char_end":   min(end, len(text)),
+            "tecken_start": start,
+            "tecken_slut":   min(end, len(text)),
         })
         if end >= len(text):
             break
@@ -159,7 +159,7 @@ class DocumentStore:
 
     def get_document(self, dok_id: str) -> dict:
         """
-        Returnerar metadata, inledning och related_hints för ett dokument.
+        Returnerar metadata, inledning och relaterat_tips för ett dokument.
 
         Om dokumentet finns i cache och cachen är giltig returneras det direkt.
         Annars hämtas dokumentet från riksdagens API, indexeras och cachas.
@@ -167,7 +167,7 @@ class DocumentStore:
         Returnerar dict med nycklarna:
             dok_id, doktyp, titel, datum, rm, status,
             url_riksdagen, inledning, cached, ocr_warning,
-            related_hints (lista med relaterade dokument)
+            relaterat_tips (lista med relaterade dokument)
         """
         if self._is_valid_cache(dok_id):
             return self._load_from_cache(dok_id)
@@ -189,7 +189,7 @@ class DocumentStore:
         de top_k mest relevanta styckena med position och kontext.
 
         Returnerar lista av dict med nycklarna:
-            chunk_index, text, char_start, char_end, score
+            chunk_index, text, tecken_start, tecken_slut, score
         """
         self.get_document(dok_id)
         query_vec = self._embed([query])[0]
@@ -243,7 +243,7 @@ class DocumentStore:
     def _fetch_from_api(self, dok_id: str) -> dict:
         """
         Hämtar dokument och dokumentstatus från riksdagens API.
-        Returnerar dict med metadata, ren text och related_hints.
+        Returnerar dict med metadata, ren text och relaterat_tips.
         """
         # Fulltext (XML med inbäddad HTML)
         text_url = f"{API_BASE}/dokument/{dok_id}/text"
@@ -264,9 +264,9 @@ class DocumentStore:
         # Dokumentstatus XML för relationsdata
         try:
             status = self._fetch_dokumentstatus(dok_id)
-            related_hints = status["relations"]
+            relaterat_tips = status["relations"]
         except Exception:
-            related_hints = []
+            relaterat_tips = []
 
         return {
             "dok_id":        dok_id,
@@ -278,7 +278,7 @@ class DocumentStore:
             "url_riksdagen": _build_riksdagen_url(dok_id, doktyp),
             "inledning":     plain_text[:INLEDNING_LEN],
             "plain_text":    plain_text,
-            "related_hints": json.dumps(related_hints, ensure_ascii=False),
+            "relaterat_tips": json.dumps(relaterat_tips, ensure_ascii=False),
         }
 
     def _fetch_dokumentstatus(self, dok_id: str) -> dict:
@@ -380,14 +380,14 @@ class DocumentStore:
         row = self._fetch_cache_meta(dok_id)
         if row is None:
             return False
-        is_current, cached_at = row
+        is_current, cachad_vid = row
         if not is_current:
             return True   # historiska dokument cachas permanent
 
         if self._db_type == "postgres":
-            age_days = (datetime.now(timezone.utc) - cached_at).days
+            age_days = (datetime.now(timezone.utc) - cachad_vid).days
         else:
-            age_days = (time.time() - cached_at) / 86_400
+            age_days = (time.time() - cachad_vid) / 86_400
         return age_days < CACHE_TTL_DAYS
 
     # ------------------------------------------------------------------
@@ -402,49 +402,49 @@ class DocumentStore:
         return self._conn
 
     def _fetch_cache_meta(self, dok_id: str):
-        """Hämtar (is_current_session, cached_at) ur cachen, eller None."""
+        """Hämtar (aktuellt_riksmote, cachad_vid) ur cachen, eller None."""
         if self._db_type == "postgres":
             conn = self._pg_conn()
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT is_current_session, cached_at FROM riksdag_api.documents WHERE dok_id = %s",
+                    "SELECT aktuellt_riksmote, cachad_vid FROM riksdag_api.dokument WHERE dok_id = %s",
                     (dok_id,)
                 )
                 return cur.fetchone()
         else:
             conn = self._sqlite_conn()
             cur  = conn.execute(
-                "SELECT is_current_session, cached_at FROM documents WHERE dok_id = ?",
+                "SELECT aktuellt_riksmote, cachad_vid FROM dokument WHERE dok_id = ?",
                 (dok_id,)
             )
             return cur.fetchone()
 
     def _load_from_cache(self, dok_id: str) -> dict:
         """Läser dokumentmetadata ur cachen och returnerar som dict."""
-        cols = "dok_id, doktyp, titel, datum, rm, status, url_riksdagen, inledning, related_hints"
+        cols = "dok_id, doktyp, titel, datum, rm, status, url_riksdagen, inledning, relaterat_tips"
         if self._db_type == "postgres":
             conn = self._pg_conn()
             with conn.cursor() as cur:
-                cur.execute(f"SELECT {cols} FROM riksdag_api.documents WHERE dok_id = %s", (dok_id,))
+                cur.execute(f"SELECT {cols} FROM riksdag_api.dokument WHERE dok_id = %s", (dok_id,))
                 row = cur.fetchone()
         else:
             conn = self._sqlite_conn()
-            cur  = conn.execute(f"SELECT {cols} FROM documents WHERE dok_id = ?", (dok_id,))
+            cur  = conn.execute(f"SELECT {cols} FROM dokument WHERE dok_id = ?", (dok_id,))
             row  = cur.fetchone()
 
         if row is None:
             raise ValueError(f"Dokument {dok_id!r} saknas i cachen trots förväntat närvaro.")
 
         keys = ["dok_id", "doktyp", "titel", "datum", "rm",
-                "status", "url_riksdagen", "inledning", "related_hints"]
+                "status", "url_riksdagen", "inledning", "relaterat_tips"]
         result = dict(zip(keys, row))
 
-        # Deserialisera related_hints från JSON
-        raw_hints = result.pop("related_hints", None)
+        # Deserialisera relaterat_tips från JSON
+        raw_hints = result.pop("relaterat_tips", None)
         try:
-            result["related_hints"] = json.loads(raw_hints) if raw_hints else []
+            result["relaterat_tips"] = json.loads(raw_hints) if raw_hints else []
         except (json.JSONDecodeError, TypeError):
-            result["related_hints"] = []
+            result["relaterat_tips"] = []
 
         result["cached"]      = True
         result["ocr_warning"] = result.get("status") == "ocr"
@@ -456,28 +456,28 @@ class DocumentStore:
         conn = self._pg_conn()
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO riksdag_api.documents
+                INSERT INTO riksdag_api.dokument
                     (dok_id, doktyp, titel, datum, rm, status,
-                     url_riksdagen, inledning, related_hints, cached_at, is_current_session)
+                     url_riksdagen, inledning, relaterat_tips, cachad_vid, aktuellt_riksmote)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
                 ON CONFLICT (dok_id) DO UPDATE SET
-                    cached_at          = EXCLUDED.cached_at,
-                    is_current_session = EXCLUDED.is_current_session,
+                    cachad_vid          = EXCLUDED.cachad_vid,
+                    aktuellt_riksmote = EXCLUDED.aktuellt_riksmote,
                     inledning          = EXCLUDED.inledning,
-                    related_hints      = EXCLUDED.related_hints
+                    relaterat_tips      = EXCLUDED.relaterat_tips
             """, (
                 raw["dok_id"], raw["doktyp"], raw["titel"], raw["datum"],
                 raw["rm"], raw["status"], raw["url_riksdagen"],
-                raw["inledning"], raw.get("related_hints"), is_current,
+                raw["inledning"], raw.get("relaterat_tips"), is_current,
             ))
 
             cur.execute("DELETE FROM riksdag_api.chunks WHERE dok_id = %s", (raw["dok_id"],))
 
             psycopg2.extras.execute_values(cur, """
-                INSERT INTO riksdag_api.chunks (dok_id, chunk_index, text, char_start, char_end, embedding)
+                INSERT INTO riksdag_api.chunks (dok_id, chunk_index, text, tecken_start, tecken_slut, embedding)
                 VALUES %s
             """, [
-                (raw["dok_id"], i, c["text"], c["char_start"], c["char_end"],
+                (raw["dok_id"], i, c["text"], c["tecken_start"], c["tecken_slut"],
                  embeddings[i].tolist())
                 for i, c in enumerate(chunks)
             ])
@@ -489,7 +489,7 @@ class DocumentStore:
             conn = self._pg_conn()
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT chunk_index, text, char_start, char_end,
+                    SELECT chunk_index, text, tecken_start, tecken_slut,
                            1 - (embedding <=> %s::vector) AS score
                     FROM   riksdag_api.chunks
                     WHERE  dok_id = %s
@@ -502,7 +502,7 @@ class DocumentStore:
             conn     = self._sqlite_conn()
             vec_bytes = query_vec.astype("float32").tobytes()
             rows = conn.execute("""
-                SELECT c.chunk_index, c.text, c.char_start, c.char_end,
+                SELECT c.chunk_index, c.text, c.tecken_start, c.tecken_slut,
                        1 - vec_distance_cosine(ce.embedding, ?) AS score
                 FROM   chunk_embeddings ce
                 JOIN   chunks c ON c.id = ce.chunk_id
@@ -513,7 +513,7 @@ class DocumentStore:
 
         return [
             {"chunk_index": r[0], "text": r[1],
-             "char_start": r[2], "char_end": r[3], "score": float(r[4])}
+             "tecken_start": r[2], "tecken_slut": r[3], "score": float(r[4])}
             for r in rows
         ]
 
@@ -537,23 +537,23 @@ class DocumentStore:
         now  = int(time.time())
 
         conn.execute("""
-            INSERT OR REPLACE INTO documents
+            INSERT OR REPLACE INTO dokument
                 (dok_id, doktyp, titel, datum, rm, status,
-                 url_riksdagen, inledning, related_hints, cached_at, is_current_session)
+                 url_riksdagen, inledning, relaterat_tips, cachad_vid, aktuellt_riksmote)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             raw["dok_id"], raw["doktyp"], raw["titel"], raw["datum"],
             raw["rm"], raw["status"], raw["url_riksdagen"],
-            raw["inledning"], raw.get("related_hints"), now, int(is_current),
+            raw["inledning"], raw.get("relaterat_tips"), now, int(is_current),
         ))
 
         conn.execute("DELETE FROM chunks WHERE dok_id = ?", (raw["dok_id"],))
 
         for i, c in enumerate(chunks):
             conn.execute("""
-                INSERT INTO chunks (dok_id, chunk_index, text, char_start, char_end)
+                INSERT INTO chunks (dok_id, chunk_index, text, tecken_start, tecken_slut)
                 VALUES (?, ?, ?, ?, ?)
-            """, (raw["dok_id"], i, c["text"], c["char_start"], c["char_end"]))
+            """, (raw["dok_id"], i, c["text"], c["tecken_start"], c["tecken_slut"]))
             chunk_id  = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
             vec_bytes = embeddings[i].astype("float32").tobytes()
             conn.execute(

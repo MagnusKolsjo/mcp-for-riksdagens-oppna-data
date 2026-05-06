@@ -36,7 +36,7 @@ TESTDOKUMENT = {
 }
 
 
-def hämta_dokumentstatus_xml(dok_id: str) -> ET.Element:
+def hamta_dokumentstatus_xml(dok_id: str) -> ET.Element:
     """Hämtar dokumentstatus XML för ett dokument."""
     url = f"{API_BASE}/dokumentstatus/{dok_id}"
     r = httpx.get(url, timeout=30)
@@ -44,7 +44,7 @@ def hämta_dokumentstatus_xml(dok_id: str) -> ET.Element:
     return ET.fromstring(r.text)
 
 
-def skriv_fält_rekursivt(element: ET.Element, djup: int = 0, max_djup: int = 6) -> None:
+def skriv_falt_rekursivt(element: ET.Element, djup: int = 0, max_djup: int = 6) -> None:
     """Skriver ut XML-trädet med fokus på intressanta relationsfält."""
     if djup > max_djup:
         return
@@ -55,7 +55,7 @@ def skriv_fält_rekursivt(element: ET.Element, djup: int = 0, max_djup: int = 6)
     else:
         print(f"{indent}<{element.tag}>")
     for child in element:
-        skriv_fält_rekursivt(child, djup + 1, max_djup)
+        skriv_falt_rekursivt(child, djup + 1, max_djup)
 
 
 def extrahera_relationer(root: ET.Element) -> dict:
@@ -124,24 +124,24 @@ if __name__ == "__main__":
         sektion(f"[{doktyp.upper()}] {dok_id}")
 
         try:
-            root = hämta_dokumentstatus_xml(dok_id)
+            root = hamta_dokumentstatus_xml(dok_id)
 
             # 1. Skriv ut hela trädet (max 4 nivåer)
             print("\n--- Fullständig XML-struktur (max 4 nivåer) ---")
-            skriv_fält_rekursivt(root, max_djup=4)
+            skriv_falt_rekursivt(root, max_djup=4)
 
             # 2. Extrahera relationsfält specifikt
             relationer = extrahera_relationer(root)
             if relationer:
                 print("\n--- Relationsfält (alla fält med 'relat' i taggen) ---")
-                for tag, värden in relationer.items():
-                    for v in värden:
+                for tag, varden in relationer.items():
+                    for v in varden:
                         print(f"  {tag}: {v}")
             else:
                 print("\n  (inga explicita relationsfält hittade)")
 
             # 3. Visa råa XML-noder för dokumentreferenser
-            print("\n--- Alla dok_id-liknande värden i dokumentet ---")
+            print("\n--- Alla dok_id-liknande varden i dokumentet ---")
             for el in root.iter():
                 text = (el.text or "").strip()
                 # Riksdags-dok_id är typiskt 5-10 tecken, alfanumeriska
