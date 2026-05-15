@@ -59,6 +59,13 @@ MCP_HOST      = os.getenv("MCP_HOST",      "127.0.0.1")
 MCP_PORT      = int(os.getenv("MCP_PORT",  "8000"))
 MCP_API_KEY   = os.getenv("MCP_API_KEY",   "")
 
+# SOU-flaggor — styr om SOU-sökning resp. SOU-hämtning/lagring exponeras.
+# Standard: true (fullt funktionell som fristående server).
+# Satt till false i installationer där liu-sou-servern (ström 4) hanterar SOU
+# för att undvika att SOU-fulltext lagras i två databaser.
+SOU_SOKNING_AKTIV  = os.getenv("SOU_SOKNING_AKTIV",  "true").lower() == "true"
+SOU_HAMTNING_AKTIV = os.getenv("SOU_HAMTNING_AKTIV", "true").lower() == "true"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
@@ -257,6 +264,11 @@ def rd_search(
         med doktyp="mot".
       * For fullstandig relationsoversikt: anvand rd_get_context.
     """
+    if not SOU_SOKNING_AKTIV and doktyp.lower() == "sou":
+        return [{"fel": "SOU-sokning ar inaktiverad pa denna server "
+                        "(SOU_SOKNING_AKTIV=false i .env). "
+                        "Anvand liu-sou-servern (strom 4) for SOU-sokning."}]
+
     params: dict = {"sz": min(sz, 100)}
     if query:     params["sok"]    = query
     if doktyp:    params["doktyp"] = doktyp
@@ -301,6 +313,18 @@ def rd_get_document(dok_id: str) -> dict:
     For fullstandig relationsoversikt: anvand rd_get_context.
     Dokument aldre an ca 1960 kan vara OCR-skannade -- se ocr_varning i svaret.
     """
+    if not SOU_HAMTNING_AKTIV:
+        # Lättviktskoll: hämta bara metadata för att se om det är en SOU.
+        try:
+            meta_data = _get_json("/dokumentlista/", {"id": dok_id, "sz": 1})
+            docs = _normalize_docs(meta_data.get("dokumentlista", {}))
+            if docs and docs[0].get("doktyp", "").lower() == "sou":
+                return {"fel": "SOU-hamtning ar inaktiverad pa denna server "
+                                "(SOU_HAMTNING_AKTIV=false i .env). "
+                                "Anvand liu-sou-servern (strom 4) for SOU-fulltext."}
+        except Exception:
+            pass  # Om metadatakollen misslyckas, fall igenom till vanlig hamtning
+
     return get_store().get_document(dok_id)
 
 
@@ -377,7 +401,7 @@ def rd_get_anforanden(
         parti  -- Filtrera pa parti (t.ex. "S", "M", "SD")
         sz     -- Antal anforanden att hamta (standard 20)
     """
-    params: dict = {"rm": rm, "sz": min(sz, 100)}
+    params: dict = {"rm": rm, "sz": min(sz, 75)}
     if talare: params["talare"] = talare
     if parti:  params["parti"]  = parti
 

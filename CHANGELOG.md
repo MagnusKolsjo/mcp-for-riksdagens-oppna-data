@@ -6,6 +6,37 @@ Versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-05-15
+
+### Tillagt — SOU_SOKNING_AKTIV och SOU_HAMTNING_AKTIV
+
+Två nya miljövariabler styr om SOU-sökning resp. SOU-hämtning/lagring
+exponeras. Standard: `true` (fullt funktionell som fristående server).
+Satt till `false` i installationer där `liu-sou`-servern (ström 4) hanterar
+SOU för att undvika att SOU-fulltext lagras i två databaser.
+
+**`SOU_SOKNING_AKTIV=false`** — Guard-clause i `rd_search`: om
+`doktyp="sou"` och flaggan är False returneras ett felmeddelande direkt.
+Generella sökningar utan explicit `doktyp` påverkas inte.
+
+**`SOU_HAMTNING_AKTIV=false`** — Guard-clause i `rd_get_document`: ett
+lättviktsanrop (`/dokumentlista/?id={dok_id}&sz=1`) kontrollerar doktypen
+innan store-anropet. Om dokumentet är en SOU returneras ett felmeddelande
+och indexeringen hoppas över. Om metadatakollen misslyckas faller servern
+igenom till normal hämtning (fail-open).
+
+Ingen förändring för installationer som kör med standardvärdena (`true`).
+
+## [2.1.1] — 2026-05-15
+
+### Ändrat
+
+- `rd_get_anforanden`: hårdtaket på `sz` sänkt från 100 till 75 för att
+  undvika MCP-protokollets ~4-minutersgräns. Vid 75 anföranden och 1–3 s
+  per HTTP-anrop till riksdagens API ryms hela körningen inom ca 225 s —
+  en säkerhetsmarginal på drygt 15 sekunder. Ingen förändring i
+  API-gränssnittet; standardvärdet `sz=20` är oförändrat.
+
 ## [2.1.0] — 2026-05-06
 
 ### Tillagt — exakt beteckningsfiltrering i `rd_search`
