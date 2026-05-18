@@ -12,25 +12,35 @@ Vad skriptet gör:
   4. Verifierar att radantalet stämmer
   5. Skriver ut instruktioner för nästa steg
 
+Konfiguration via .env (se config.example.env):
+  RIKSDAG_DB_URL_KALLA  — PostgreSQL-URL till källdatabasen (riksdag_rag)
+  RIKSDAG_DB_URL_MAL    — PostgreSQL-URL till måldatabasen (riksdagstryck)
+
 Kör skriptet från repots rot:
   python3 migrate_to_riksdagstryck.py
 
 Kräver psycopg2: pip install psycopg2-binary
 """
 
+import os
 import sys
+from pathlib import Path
+
 import psycopg2
 import psycopg2.extras
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
 
 # ---------------------------------------------------------------------------
-# Konfiguration — anpassa vid behov
+# Konfiguration — läses från .env
 # ---------------------------------------------------------------------------
 
 # Källdatabas: riksdag_rag (arbetsström 3:s gamla databas)
-KALLA_URL = "postgresql://DB_ANVANDARE_BORTTAGET:LOSENORD_BORTTAGET@localhost:5432/riksdag_rag"
+KALLA_URL = os.environ.get("RIKSDAG_DB_URL_KALLA", "")
 
 # Måldatabas: riksdagstryck (den gemensamma databasen)
-MAL_URL = "postgresql://DB_ANVANDARE_BORTTAGET:LOSENORD_BORTTAGET@localhost:5432/riksdagstryck"
+MAL_URL = os.environ.get("RIKSDAG_DB_URL_MAL", "")
 
 # ---------------------------------------------------------------------------
 
@@ -159,6 +169,13 @@ def kopiera_chunks(kalla, mal) -> int:
 
 
 def main() -> None:
+    if not KALLA_URL:
+        print("Fel: RIKSDAG_DB_URL_KALLA \u00e4r inte satt i .env", file=sys.stderr)
+        sys.exit(1)
+    if not MAL_URL:
+        print("Fel: RIKSDAG_DB_URL_MAL \u00e4r inte satt i .env", file=sys.stderr)
+        sys.exit(1)
+
     print("\n=== Migration: riksdag_rag \u2192 riksdagstryck (riksdag_api) ===\n")
 
     print("Ansluter till databaser...")
@@ -203,8 +220,7 @@ def main() -> None:
 === Migration klar ===
 
 N\u00e4sta steg:
-  1. Uppdatera DATABASE_URL i b\u00e5da .env-filer till:
-       DATABASE_URL=postgresql://DB_ANVANDARE_BORTTAGET:LOSENORD_BORTTAGET@localhost:5432/riksdagstryck
+  1. Uppdatera DATABASE_URL i .env till riksdagstryck-anslutningen.
 
      Filer att uppdatera:
        - stream-03-riksdagens-oppna-data/.env  (om den finns)
@@ -212,8 +228,8 @@ N\u00e4sta steg:
 
   2. Starta om MCP-servern f\u00f6r arbetsstr\u00f6m 3.
 
-  3. N\u00e4r allt verifierats kan riksdag_rag-databasen tas bort:
-       dropdb -U DB_ANVANDARE_BORTTAGET riksdag_rag
+  3. N\u00e4r allt verifierats kan k\u00e4lldatabasen (riksdag_rag) tas bort:
+       dropdb riksdag_rag
 """)
     else:
         print("\n\u26a0 Kontrollera felen ovan innan du uppdaterar .env-filen.")

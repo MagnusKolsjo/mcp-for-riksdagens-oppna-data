@@ -4,7 +4,16 @@ Alla betydande ändringar dokumenteras här.
 Formatet följer [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.2.1] - 2026-05-18
+
+### Säkerhet
+
+- `migrate_to_riksdagstryck.py`: hårdkodade databasuppgifter ersatta med
+  läsning från miljövariablerna `RIKSDAG_DB_URL_KALLA` och `RIKSDAG_DB_URL_MAL`
+  via `.env` (python-dotenv). Validering tillagd så att skriptet avslutas
+  med tydligt felmeddelande om variablerna saknas. Filen är ett
+  engångsmigrationsskript (genomfört 2026-05-03) och påverkar inte
+  MCP-serverns normala drift.
 
 ## [2.2.0] — 2026-05-15
 
