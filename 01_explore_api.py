@@ -25,6 +25,8 @@ load_dotenv()
 
 API_BASE = os.getenv("RIKSDAG_API_BASE", "https://data.riksdagen.se")
 
+HEADERS = {"User-Agent": "mcp-for-riksdagens-oppna-data/1.0 (+https://github.com/MagnusKolsjo/mcp-for-riksdagens-oppna-data)"}
+
 
 # ---------------------------------------------------------------------------
 # Hjälpfunktioner
@@ -34,7 +36,7 @@ def get_json(path: str, params: dict) -> dict:
     """Gör ett GET-anrop och returnerar JSON-svar."""
     params["utformat"] = "json"
     url = f"{API_BASE}{path}"
-    r = httpx.get(url, params=params, timeout=30)
+    r = httpx.get(url, params=params, timeout=30, headers=HEADERS)
     r.raise_for_status()
     return r.json()
 
@@ -42,7 +44,7 @@ def get_json(path: str, params: dict) -> dict:
 def get_xml_text(dok_id: str) -> str:
     """Hämtar dokumentets textformat (XML med inbäddad HTML)."""
     url = f"{API_BASE}/dokument/{dok_id}/text"
-    r = httpx.get(url, timeout=30)
+    r = httpx.get(url, timeout=30, headers=HEADERS)
     r.raise_for_status()
     return r.text
 
@@ -233,7 +235,7 @@ def test_anforanden():
         first = anf_list[0]
         anf_id = f"{first['dok_id']}-{first['anforande_nummer']}"
         print(f"\n  Hämtar enskilt: /anforande/{anf_id}")
-        r = httpx.get(f"{API_BASE}/anforande/{anf_id}", timeout=30)
+        r = httpx.get(f"{API_BASE}/anforande/{anf_id}", timeout=30, headers=HEADERS)
         root = ET.fromstring(r.text)
         for child in root:
             if child.tag == "anforandetext" and child.text:

@@ -26,6 +26,8 @@ load_dotenv()
 
 API_BASE = os.getenv("RIKSDAG_API_BASE", "https://data.riksdagen.se")
 
+HEADERS = {"User-Agent": "mcp-for-riksdagens-oppna-data/1.0 (+https://github.com/MagnusKolsjo/mcp-for-riksdagens-oppna-data)"}
+
 # Representativa dokument att undersöka
 TESTDOKUMENT = {
     "prop":  "HD03158",    # Hela Sverige ska fungera 2025/26:158
@@ -39,7 +41,7 @@ TESTDOKUMENT = {
 def hamta_dokumentstatus_xml(dok_id: str) -> ET.Element:
     """Hämtar dokumentstatus XML för ett dokument."""
     url = f"{API_BASE}/dokumentstatus/{dok_id}"
-    r = httpx.get(url, timeout=30)
+    r = httpx.get(url, timeout=30, headers=HEADERS)
     r.raise_for_status()
     return ET.fromstring(r.text)
 
@@ -91,6 +93,7 @@ def hitta_skriftlig_fraga() -> str | None:
     r = httpx.get(
         f"{API_BASE}/dokumentlista/",
         params={"doktyp": "fr", "sz": 1, "utformat": "json"},
+        headers=HEADERS,
         timeout=30,
     )
     data = r.json()

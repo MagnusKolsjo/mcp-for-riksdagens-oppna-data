@@ -12,7 +12,7 @@ Exponerar följande verktyg till MCP-kompatibla AI-verktyg:
   rd_get_context            — Kontextpaket: relaterade dokument per relationstyp
   rd_get_anforanden         — Hämtar debattinlägg med fulltext
   rd_get_voteringar         — Hämtar voteringsdata
-  rd_list_riksmoten         — Listar tillgängliga riksmöten
+  rd_list_riksmoten         — Listar tillgängliga riksmöten (1867–idag)
   rd_resolve_sfs            — Slår upp SFS-nummer för en lag via namn
   rd_search_ledamoter       — Söker riksdagsledamöter på namn, parti eller valkrets
   rd_get_ledamot            — Hämtar fullständig profil för en ledamot
@@ -36,6 +36,7 @@ Konfiguration via .env (se config.example.env).
 import logging
 import os
 import re
+import secrets
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
@@ -44,7 +45,7 @@ import httpx
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-from document_store import DocumentStore
+from document_store import DocumentStore, _strippa_html
 
 load_dotenv(Path(__file__).parent / '.env')
 
@@ -52,6 +53,13 @@ load_dotenv(Path(__file__).parent / '.env')
 
 API_BASE  = os.getenv("RIKSDAG_API_BASE", "https://data.riksdagen.se")
 PAGE_SIZE = int(os.getenv("RIKSDAG_PAGE_SIZE", 10))
+
+# Projektidentifierande UA enligt projektets UA-konvention. Skickas med på
+# alla anrop mot data.riksdagen.se så att Riksdagsförvaltningens drift-team
+# kan se att förfrågningar kommer från denna MCP-server.
+HEADERS = {
+    "User-Agent": "mcp-for-riksdagens-oppna-data/1.0 (+https://github.com/MagnusKolsjo/mcp-for-riksdagens-oppna-data)",
+}
 
 # Transport och autentisering (regel 8 i projektstandarden)
 MCP_TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio").lower()
@@ -73,10 +81,13 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# Sökväg till db/init_db.py (används för idempotent schema-init vid uppstart)
+_DB_INIT_PATH = Path(__file__).parent / "db" / "init_db.py"
+
 _store: Optional[DocumentStore] = None
 
 
-def get_store() -> DocumentStore:
+def _hamta_store() -> DocumentStore:
     global _store
     if _store is None:
         _store = DocumentStore()
@@ -99,21 +110,23 @@ def _riksdagen_url(dok_id: str, doktyp: str) -> str:
     return f"https://www.riksdagen.se/sv/dokument-och-lagar/dokument/{seg}/_{dok_id}/"
 
 
-def _get_json(path: str, params: dict) -> dict:
+def _hamta_json(path: str, params: dict) -> dict:
     params["utformat"] = "json"
-    r = httpx.get(f"{API_BASE}{path}", params=params, timeout=30)
+    r = httpx.get(f"{API_BASE}{path}", params=params, headers=HEADERS, timeout=30)
     r.raise_for_status()
     return r.json()
 
 
-def _normalize_docs(dl: dict) -> list:
+def _normalisera_dokument(dl: dict) -> list:
     docs = dl.get("dokument", [])
     if isinstance(docs, dict):
         docs = [docs]
     return docs or []
 
 
-# Prefix som anvands nar en formell dokumentreferens byggs av rm + beteckning.
+# _strippa_html importeras från document_store (BS4-version som avkodar HTML-entiteter).
+
+# Prefix som används när en formell dokumentreferens byggs av rm + beteckning.
 # Exempel: ("sou", "2025", "106") -> "SOU 2025:106".
 _REFERENS_PREFIX = {
     "prop": "prop.",
@@ -151,6 +164,8 @@ def _dela_beteckning(beteckning: str) -> tuple[str, str]:
         return "", ""
     s = beteckning.strip()
     # Ta bort vanliga prefix (skiftlagesokansligt) -- "SOU ", "prop. ", "Ds ", osv.
+    # OBS: prefix-listan kraver mellanslag efter prefixet ("prop. 2024/25" OK,
+    # "prop.2024/25" utan mellanslag faller igenom -- kan forekomma vid PDF-inklistring).
     for prefix in ("SOU ", "Ds ", "Dir ", "dir. ", "prop. ", "prop ",
                    "mot. ", "mot ", "bet. ", "bet ", "prot. ", "prot "):
         if s.lower().startswith(prefix.lower()):
@@ -162,7 +177,45 @@ def _dela_beteckning(beteckning: str) -> tuple[str, str]:
     return rm.strip(), nummer.strip()
 
 
-def _format_doc(doc: dict) -> dict:
+def _hamta_pdf_url(doc: dict) -> str:
+    """Extraherar PDF-URL ur filbilaga-fältet, eller tom sträng om ingen PDF finns."""
+    try:
+        fb = doc.get("filbilaga") or {}
+        if isinstance(fb, list):
+            fb = fb[0] if fb else {}
+        filer = fb.get("fil") or []
+        if isinstance(filer, dict):
+            filer = [filer]
+        for f in filer:
+            if isinstance(f, dict) and f.get("typ", "").upper() == "PDF":
+                return f.get("url", "")
+    except Exception:
+        pass
+    return ""
+
+
+def _rm_ar_fore_1995(rm: str) -> bool:
+    """Returnerar True om riksmotesidentifieraren avser ett riksmote fore 1995.
+
+    Hanterar bada format:
+        Kalenderår  : "1867" ... "1975"  -- jamfor direkt som int
+        Brutet format: "1975/76" onward  -- extrahera startaret och jamfor
+    Returnerar False om rm inte kan tolkas (t.ex. tomt strang).
+    """
+    if not rm:
+        return False
+    # Brutet format: "YYYY/YY" eller "YYYY/YYYY"
+    if "/" in rm:
+        start = rm.split("/")[0]
+    else:
+        start = rm
+    try:
+        return int(start) < 1995
+    except ValueError:
+        return False
+
+
+def _formatera_dokument(doc: dict) -> dict:
     dok_id     = doc.get("dok_id", "")
     doktyp     = doc.get("doktyp", "")
     rm         = doc.get("rm", "")
@@ -177,9 +230,27 @@ def _format_doc(doc: dict) -> dict:
         "beteckning": beteckning,
         "nummer":     nummer,
         "referens":   _formatera_referens(doktyp, rm, beteckning),
+        "notis":      doc.get("notis", ""),
+        "organ":      doc.get("organ", ""),
+        "pdf_url":    _hamta_pdf_url(doc),
         "url":        _riksdagen_url(dok_id, doktyp),
     }
-    if doc.get("status") == "ocr":
+    # Flagga OCR for:
+    #   status='ocr'         -- pre-1971-material (markerat direkt av API:et)
+    #   htmlformat='skanning2007' -- inskannat 2007 (finns bara i /dokument/{id}/text,
+    #                                inte i /dokumentlista/-svar)
+    #   status='importerad' + rm fore 1995 -- heuristik for 1971-1994-material dar
+    #                                        /dokumentlista/ inte exponerar htmlformat;
+    #                                        det mesta av detta ar inskannat material
+    _ar_ocr = (
+        doc.get("status") == "ocr"
+        or doc.get("htmlformat") == "skanning2007"
+        or (
+            doc.get("status") == "importerad"
+            and _rm_ar_fore_1995(rm)
+        )
+    )
+    if _ar_ocr:
         result["ocr_varning"] = (
             "Detta dokument ar inskannat material med OCR-text. "
             "Kvaliteten kan vara begransad. Se PDF-originalet via url-faltet."
@@ -187,13 +258,12 @@ def _format_doc(doc: dict) -> dict:
     return result
 
 
-def _extract_sfs_nr(titel: str) -> str:
-    import re as _re
-    m = _re.search(r"\((\d{4}:\d+)\)", titel)
+def _extrahera_sfs_nr(titel: str) -> str:
+    m = re.search(r"\((\d{4}:\d+)\)", titel)
     return m.group(1) if m else ""
 
 
-def _normalize_persons(pl: dict) -> list:
+def _normalisera_personer(pl: dict) -> list:
     """Normaliserar personlista-svaret till en lista."""
     persons = pl.get("person", [])
     if isinstance(persons, dict):
@@ -201,7 +271,7 @@ def _normalize_persons(pl: dict) -> list:
     return persons or []
 
 
-def _format_person(p: dict) -> dict:
+def _formatera_person(p: dict) -> dict:
     """Formaterar ett person-objekt till ett konsekvent svarformat."""
     iid = p.get("intressent_id", "")
     return {
@@ -228,7 +298,7 @@ def rd_search(
     rm: str = "",
     nummer: str = "",
     sz: int = 10,
-) -> list[dict]:
+) -> dict:
     """
     Soker i riksdagens oppna data efter propositioner, motioner, betankanden,
     protokoll, SOU, Ds och kommittedirektiv.
@@ -247,13 +317,16 @@ def rd_search(
                         sou, ds, dir         -> "2025"    (kalenderar)
         nummer     -- Exakt nummer/beteckning inom ett rm. Anvands tillsammans
                       med rm. For doktyp=bet (alfanumeriska beteckningar som
-                      "FiU6") skickas det som API-fel `bet`, annars som `nr`.
+                      "FiU6") skickas det som API-falt `bet`, annars som `nr`.
         sz         -- Antal traffar (max 100)
 
-    Returnerar lista med dok_id, doktyp, titel, datum, rm, beteckning, nummer,
-    referens (formaterad citering t.ex. "SOU 2025:106") och lank till
-    riksdagen.se. Dokument med status ocr_varning ar inskannat material --
-    se PDF-originalet.
+    Returnerar dict med nycklarna:
+        antal_traffar     -- totalt antal traffar i API:et
+        antal_returnerade -- antal traffar i detta svar
+        traffar           -- lista med dok_id, doktyp, titel, datum, rm,
+                             beteckning, nummer, referens, notis, organ,
+                             pdf_url och lank till riksdagen.se.
+                             Dokument med ocr_varning ar inskannat material.
 
     Tips:
       * For exakt uppslag pa SOU 2025:106 skriv beteckning="2025:106" och
@@ -265,9 +338,9 @@ def rd_search(
       * For fullstandig relationsoversikt: anvand rd_get_context.
     """
     if not SOU_SOKNING_AKTIV and doktyp.lower() == "sou":
-        return [{"fel": "SOU-sokning ar inaktiverad pa denna server "
-                        "(SOU_SOKNING_AKTIV=false i .env). "
-                        "Anvand liu-sou-servern (strom 4) for SOU-sokning."}]
+        return {"fel": "SOU-sokning ar inaktiverad pa denna server "
+                       "(SOU_SOKNING_AKTIV=false i .env). "
+                       "Anvand liu-sou-servern (strom 4) for SOU-sokning."}
 
     params: dict = {"sz": min(sz, 100)}
     if query:     params["sok"]    = query
@@ -276,8 +349,8 @@ def rd_search(
     # Beteckning kan ange bade rm och nummer pa en gang ("2025:106").
     # Direkta parametrar (rm, nummer) overskrider beteckningens delar.
     bet_rm, bet_nr = _dela_beteckning(beteckning)
-    effektivt_rm  = rm or bet_rm
-    effektivt_nr  = nummer or bet_nr
+    effektivt_rm   = rm or bet_rm
+    effektivt_nr   = nummer or bet_nr
 
     if effektivt_rm:
         params["rm"] = effektivt_rm
@@ -293,10 +366,17 @@ def rd_search(
     if year_from: params["from"] = f"{year_from}-01-01"
     if year_to:   params["tom"]  = f"{year_to}-12-31"
 
-    data = _get_json("/dokumentlista/", params)
+    data = _hamta_json("/dokumentlista/", params)
     dl   = data["dokumentlista"]
-    docs = _normalize_docs(dl)
-    return [_format_doc(d) for d in docs]
+    docs = _normalisera_dokument(dl)
+
+    # API:et använder @traffar (inte @antal_traffar) för dokumentlista.
+    antal_traffar = int(dl.get("@traffar", dl.get("traffar", 0)) or 0)
+    return {
+        "antal_traffar":     antal_traffar,
+        "antal_returnerade": len(docs),
+        "traffar":           [_formatera_dokument(d) for d in docs],
+    }
 
 
 @mcp.tool()
@@ -304,20 +384,28 @@ def rd_get_document(dok_id: str) -> dict:
     """
     Hamtar ett riksdagsdokument och cachar det lokalt for semantisk sokning.
 
-    Returnerar metadata, de forsta 500 tecknen av fulltexten (inledning),
-    en lank till riksdagen.se samt relaterat_tips -- en lista med direkt
-    relaterade dokument (foljdmotioner, behandlande betankande, protokoll m.m.)
-    hamtad fran riksdagens dokumentstatus-endpoint.
+    Returnerar metadata och de forsta 500 tecknen av fulltexten (inledning)
+    samt en lank till riksdagen.se.
 
+    For relationsdata (foljdmotioner, behandlande betankande m.m.):
+    anvand rd_get_context — relationsdata hamtas alltid fersk darifrån.
     For djupsokning i fulltexten: anvand rd_search_in_document.
-    For fullstandig relationsoversikt: anvand rd_get_context.
     Dokument aldre an ca 1960 kan vara OCR-skannade -- se ocr_varning i svaret.
     """
     if not SOU_HAMTNING_AKTIV:
-        # Lättviktskoll: hämta bara metadata för att se om det är en SOU.
+        store = _hamta_store()
+        # Kolla cache forst -- sparar ett HTTP-anrop for cachade icke-SOU-dokument.
+        if store._giltig_cache(dok_id):
+            cached = store._las_fran_cache(dok_id)
+            if cached.get("doktyp", "").lower() == "sou":
+                return {"fel": "SOU-hamtning ar inaktiverad pa denna server "
+                                "(SOU_HAMTNING_AKTIV=false i .env). "
+                                "Anvand liu-sou-servern (strom 4) for SOU-fulltext."}
+            return cached
+        # Inte cachat -- lattiviktskoll via API for att kontrollera doktyp.
         try:
-            meta_data = _get_json("/dokumentlista/", {"id": dok_id, "sz": 1})
-            docs = _normalize_docs(meta_data.get("dokumentlista", {}))
+            meta_data = _hamta_json("/dokumentlista/", {"id": dok_id, "sz": 1})
+            docs = _normalisera_dokument(meta_data.get("dokumentlista", {}))
             if docs and docs[0].get("doktyp", "").lower() == "sou":
                 return {"fel": "SOU-hamtning ar inaktiverad pa denna server "
                                 "(SOU_HAMTNING_AKTIV=false i .env). "
@@ -325,7 +413,7 @@ def rd_get_document(dok_id: str) -> dict:
         except Exception:
             pass  # Om metadatakollen misslyckas, fall igenom till vanlig hamtning
 
-    return get_store().get_document(dok_id)
+    return _hamta_store().hamta_dokument(dok_id)
 
 
 @mcp.tool()
@@ -333,7 +421,7 @@ def rd_search_in_document(
     dok_id: str,
     query: str,
     top_k: int = 5,
-) -> list[dict]:
+) -> dict:
     """
     Semantisk sokning inom ett specifikt riksdagsdokument.
 
@@ -344,8 +432,17 @@ def rd_search_in_document(
         dok_id -- Dokumentets ID (hamtas via rd_search)
         query  -- Sokning pa naturligt sprak, t.ex. "torghandelns frihet"
         top_k  -- Antal stycken att returnera (standard 5)
+
+    Returnerar dict med nycklarna:
+        antal_returnerade -- antal returnerade stycken (= top_k eller farre)
+        traffar           -- lista med chunk_index, text, tecken_start,
+                             tecken_slut och score (cosinus-likhet 0-1)
     """
-    return get_store().search_in_document(dok_id, query, top_k)
+    traffar = _hamta_store().sok_i_dokument(dok_id, query, top_k)
+    return {
+        "antal_returnerade": len(traffar),
+        "traffar":           traffar,
+    }
 
 
 @mcp.tool()
@@ -363,8 +460,8 @@ def rd_get_context(dok_id: str) -> dict:
         protokolldebatt  -- Kammarprotokoll med debatten
         protokollbeslut  -- Kammarprotokoll med riksdagsbeslutet
         beslut_id        -- Voteringsprotokoll
-        frågesvar       -- Formellt skriftligt svar pa en skriftlig fraga (fr -> frs)
-        fråga            -- Ursprunglig skriftlig fraga (frs -> fr)
+        fragesvar        -- Formellt skriftligt svar pa en skriftlig fraga (fr -> frs)
+        fraga            -- Ursprunglig skriftlig fraga (frs -> fr)
         ipsvarid         -- Protokoll dar interpellationen besvarades i kammaren
         GemensamtBesvarad -- Andra interpellationer besvarade vid samma tillfalle
         GemensamtSvar    -- Gemensamt svar pa flera interpellationer
@@ -382,7 +479,7 @@ def rd_get_context(dok_id: str) -> dict:
     hitta relevanta stycken i protokollet.
     Nyligen inlamnade fragor saknar svar tills de besvarats.
     """
-    return get_store().get_related(dok_id)
+    return _hamta_store().hamta_relaterade(dok_id)
 
 
 @mcp.tool()
@@ -391,7 +488,7 @@ def rd_get_anforanden(
     talare: str = "",
     parti: str = "",
     sz: int = 20,
-) -> list[dict]:
+) -> dict:
     """
     Hamtar debattinlagg (anforanden) fran riksdagen med fulltext.
 
@@ -400,12 +497,20 @@ def rd_get_anforanden(
         talare -- Filtrera pa talarens namn
         parti  -- Filtrera pa parti (t.ex. "S", "M", "SD")
         sz     -- Antal anforanden att hamta (standard 20)
+
+    Returnerar dict med nycklarna:
+        antal_returnerade -- antal anforanden i detta svar
+        anforanden        -- lista med anforanden. Varje post innehaller:
+                             anforande_id, dok_id, anforande_nummer, iid (talarens
+                             intressent_id), rel_dok_id, kammaraktivitet, talare,
+                             parti, datum, rubrik, anforandetext (ren text, HTML-strippad),
+                             protokoll_url.
     """
     params: dict = {"rm": rm, "sz": min(sz, 75)}
     if talare: params["talare"] = talare
     if parti:  params["parti"]  = parti
 
-    data     = _get_json("/anforandelista/", params)
+    data     = _hamta_json("/anforandelista/", params)
     al       = data["anforandelista"]
     anf_list = al.get("anforande", [])
     if isinstance(anf_list, dict):
@@ -418,7 +523,7 @@ def rd_get_anforanden(
         anf_id = f"{dok_id}-{nr}"
         fulltext = ""
         try:
-            r = httpx.get(f"{API_BASE}/anforande/{anf_id}", timeout=30)
+            r = httpx.get(f"{API_BASE}/anforande/{anf_id}", headers=HEADERS, timeout=30)
             if r.status_code == 200:
                 root = ET.fromstring(r.text)
                 for child in root:
@@ -428,39 +533,63 @@ def rd_get_anforanden(
         except Exception:
             pass
         results.append({
-            "anforande_id":  anf.get("anforande_id", ""),
-            "talare":        anf.get("talare", ""),
-            "parti":         anf.get("parti", ""),
-            "datum":         anf.get("dok_datum", ""),
-            "rubrik":        anf.get("avsnittsrubrik", ""),
-            "anforandetext": fulltext,
-            "protokoll_url": anf.get("protokoll_url_www", ""),
+            "anforande_id":     anf.get("anforande_id", ""),
+            "dok_id":           dok_id,
+            "anforande_nummer": nr,
+            "iid":              anf.get("intressent_id", ""),
+            "rel_dok_id":       anf.get("rel_dok_id", ""),
+            "kammaraktivitet":  anf.get("kammaraktivitet", ""),
+            "talare":           anf.get("talare", ""),
+            "parti":            anf.get("parti", ""),
+            "datum":            anf.get("dok_datum", ""),
+            "rubrik":           anf.get("avsnittsrubrik", ""),
+            "anforandetext":    _strippa_html(fulltext) if fulltext else "",
+            "protokoll_url":    anf.get("protokoll_url_www", ""),
         })
-    return results
+
+    return {
+        "antal_returnerade": len(results),
+        "anforanden":        results,
+    }
 
 
 @mcp.tool()
 def rd_get_voteringar(
     rm: str,
     bet: str = "",
-) -> list[dict]:
+    sz: int = 100,
+) -> dict:
     """
     Hamtar voteringsdata fran riksdagen.
 
     Parametrar:
         rm  -- Riksmote, t.ex. "2024/25" (obligatorisk)
         bet -- Filtrera pa betankandebeteckning, t.ex. "JuU10"
+        sz  -- Antal voteringar att hamta (max 100, standard 100)
+
+    Returnerar dict med nycklarna:
+        antal_returnerade -- antal voteringar i detta svar
+        voteringar        -- lista med voteringar (votering_id, namn, parti,
+                             rost, beteckning, punkt, avser)
+
+    Obs: API:et exponerar inte totalantalet voteringar for dessa endpoints --
+    antal_returnerade ar det enda tillgangliga mattet. Filtrera med bet-parametern
+    for ett mer hanterbart resultat (t.ex. bet="JuU10").
+
+    Tips: filtrera med bet="JuU10" for att fa alla voteringar for ett betankande.
+    En votering med manga ledamoter kan ha hundratals rader -- beteckningsfiltret
+    ger ofta ett mycket mer hanterbart resultat.
     """
-    params: dict = {"rm": rm, "sz": 100}
+    params: dict = {"rm": rm, "sz": min(sz, 100)}
     if bet: params["bet"] = bet
 
-    data       = _get_json("/voteringlista/", params)
+    data       = _hamta_json("/voteringlista/", params)
     vl         = data["voteringlista"]
     voteringar = vl.get("votering", [])
     if isinstance(voteringar, dict):
         voteringar = [voteringar]
 
-    return [
+    votering_lista = [
         {
             "votering_id": v.get("votering_id", ""),
             "namn":        v.get("namn", ""),
@@ -473,31 +602,71 @@ def rd_get_voteringar(
         for v in voteringar
     ]
 
-
-@mcp.tool()
-def rd_list_riksmoten() -> list[str]:
-    """Returnerar en lista med tillgangliga riksmoten fran det senaste och bakat."""
-    data2     = _get_json("/dokumentlista/", {"doktyp": "prop", "sz": 200})
-    docs      = _normalize_docs(data2["dokumentlista"])
-    riksmoten = sorted({d["rm"] for d in docs if d.get("rm")}, reverse=True)
-    return riksmoten
+    return {
+        "antal_returnerade": len(votering_lista),
+        "voteringar":        votering_lista,
+    }
 
 
 @mcp.tool()
-def rd_resolve_sfs(query: str) -> list[dict]:
+def rd_list_riksmoten() -> dict:
+    """
+    Returnerar en komplett lista med riksmoten fran 1867 till idag, senast forst.
+
+    Format pa riksmotesidentifierare:
+        1867-1975 : kalenderår ("1867", "1868", ..., "1975")
+        1975/76   : overgangssession (forlangd; RF:s forsta riksmote)
+        1976/77-  : brutet format ("1976/77", "1977/78", ...)
+
+    Observera att overgangssessionen "1975/76" och kalenderaret "1975" ar
+    tva separata riksmoten i riksdagens system.
+
+    Returnerar dict med nycklarna:
+        antal_returnerade -- totalt antal riksmoten i listan
+        riksmoten         -- lista med riksmotesidentifierare
+    """
+    import datetime as _dt
+
+    riksmoten: list[str] = []
+
+    # Kalenderår: tvåkammarriksdagen och enkammarriksdagen t.o.m. 1975
+    for ar in range(1867, 1976):
+        riksmoten.append(str(ar))
+
+    # Overgangssessionen 1975/76 (forlangd kalendarssession)
+    riksmoten.append("1975/76")
+
+    # Brutet riksmotesformat fran 1976/77 och framat
+    idag          = _dt.date.today()
+    senaste_start = idag.year if idag.month >= 9 else idag.year - 1
+    for start_ar in range(1976, senaste_start + 1):
+        riksmoten.append(f"{start_ar}/{str(start_ar + 1)[-2:]}")
+
+    riksmoten_sorterade = sorted(riksmoten, reverse=True)
+    return {
+        "antal_returnerade": len(riksmoten_sorterade),
+        "riksmoten":         riksmoten_sorterade,
+    }
+
+
+@mcp.tool()
+def rd_resolve_sfs(query: str) -> dict:
     """
     Slar upp SFS-nummer for en lag via namn eller sokterm.
 
     Anvands nar SFS-numret ar okant eller nar en proposition foreslar en ny lag.
-    Returnerar matchande lagar med SFS-nummer, titel och datum.
+
+    Returnerar dict med nycklarna:
+        antal_returnerade -- antal matchande lagar
+        traffar           -- lista med sfs_nr, titel, datum och dok_id
     """
-    data  = _get_json("/dokumentlista/", {"doktyp": "sfs", "sok": query, "sz": 20})
-    docs  = _normalize_docs(data["dokumentlista"])
+    data  = _hamta_json("/dokumentlista/", {"doktyp": "sfs", "sok": query, "sz": 20})
+    docs  = _normalisera_dokument(data["dokumentlista"])
 
     results = []
     for doc in docs:
         titel  = doc.get("titel", "")
-        sfs_nr = _extract_sfs_nr(titel)
+        sfs_nr = _extrahera_sfs_nr(titel)
         if not sfs_nr:
             continue
         results.append({
@@ -506,7 +675,10 @@ def rd_resolve_sfs(query: str) -> list[dict]:
             "datum":  doc.get("datum", ""),
             "dok_id": doc.get("dok_id", ""),
         })
-    return results
+    return {
+        "antal_returnerade": len(results),
+        "traffar":           results,
+    }
 
 
 @mcp.tool()
@@ -517,7 +689,7 @@ def rd_search_ledamoter(
     valkrets: str = "",
     status: str = "",
     sz: int = 30,
-) -> list[dict]:
+) -> dict:
     """
     Soker riksdagsledamoter pa namn, parti, valkrets eller status.
 
@@ -529,8 +701,11 @@ def rd_search_ledamoter(
         status    -- Filtrera pa status: Tjanstgorande | Tjanstledig | Ersattare
         sz        -- Antal resultat (max 100, standard 30)
 
-    Returnerar lista med iid, for- och efternamn, parti, valkrets, status
-    samt lanken till ledamotens profilsida pa riksdagen.se.
+    Returnerar dict med nycklarna:
+        antal_traffar     -- totalt antal matchande ledamoter i API:et
+        antal_returnerade -- antal ledamoter i detta svar
+        ledamoter         -- lista med iid, for- och efternamn, parti, valkrets,
+                             status samt lank till profilsida pa riksdagen.se
 
     Tips: iid (intressent_id) fran resultatet anvands i rd_get_ledamot och
     rd_get_ledamot_aktivitet for att hamta mer information om en specifik ledamot.
@@ -542,10 +717,16 @@ def rd_search_ledamoter(
     if valkrets:  params["valkrets"]  = valkrets
     if status:    params["rdlstatus"] = status
 
-    data    = _get_json("/personlista/", params)
+    data    = _hamta_json("/personlista/", params)
     pl      = data.get("personlista", {})
-    persons = _normalize_persons(pl)
-    return [_format_person(p) for p in persons]
+    persons = _normalisera_personer(pl)
+    # API:et använder @hits för personlista.
+    antal_traffar = int(pl.get("@hits", pl.get("hits", 0)) or 0)
+    return {
+        "antal_traffar":     antal_traffar,
+        "antal_returnerade": len(persons),
+        "ledamoter":         [_formatera_person(p) for p in persons],
+    }
 
 
 @mcp.tool()
@@ -562,14 +743,14 @@ def rd_get_ledamot(iid: str) -> dict:
     Uppdragslistan ar grupperad efter uppdragstyp och inkluderar tidsperioder
     sa att man kan se nar ledamoten suttit i vilka organ.
     """
-    data    = _get_json("/personlista/", {"iid": iid})
+    data    = _hamta_json("/personlista/", {"iid": iid})
     pl      = data.get("personlista", {})
-    persons = _normalize_persons(pl)
+    persons = _normalisera_personer(pl)
     if not persons:
         return {"fel": f"Hittade ingen ledamot med iid={iid}"}
 
     p      = persons[0]
-    result = _format_person(p)
+    result = _formatera_person(p)
 
     # Hamta uppdragslistan om den finns i svaret
     uppdrag_raw = p.get("personuppdrag", {})
@@ -582,11 +763,11 @@ def rd_get_ledamot(iid: str) -> dict:
         for u in (uppdrag_lista or []):
             typ = u.get("typ", "okand")
             per_typ.setdefault(typ, []).append({
-                "organ":   u.get("organ_kod", ""),
-                "roll":    u.get("roll_kod", ""),
-                "from_ar": u.get("from", ""),
-                "tom_ar":  u.get("tom", ""),
-                "status":  u.get("status", ""),
+                "organ":      u.get("organ_kod", ""),
+                "roll":       u.get("roll_kod", ""),
+                "from_datum": u.get("from", ""),  # format: "ÅÅÅÅ-MM-DD HH:MM:SS"
+                "tom_datum":  u.get("tom", ""),   # format: "ÅÅÅÅ-MM-DD HH:MM:SS"
+                "status":     u.get("status", ""),
             })
         result["uppdrag"] = per_typ
 
@@ -625,7 +806,7 @@ def rd_get_ledamot_aktivitet(
 
     # Anforanden
     try:
-        anf_data = _get_json("/anforandelista/", dict(params_base))
+        anf_data = _hamta_json("/anforandelista/", dict(params_base))
         al       = anf_data.get("anforandelista", {})
         anf_list = al.get("anforande", [])
         if isinstance(anf_list, dict):
@@ -645,17 +826,17 @@ def rd_get_ledamot_aktivitet(
     try:
         mot_params = dict(params_base)
         mot_params["doktyp"] = "mot"
-        mot_data   = _get_json("/dokumentlista/", mot_params)
-        motioner   = [_format_doc(d) for d in _normalize_docs(mot_data["dokumentlista"])]
+        mot_data   = _hamta_json("/dokumentlista/", mot_params)
+        motioner   = [_formatera_dokument(d) for d in _normalisera_dokument(mot_data["dokumentlista"])]
     except Exception:
         motioner = []
 
     # Interpellationer
     try:
-        ip_params        = dict(params_base)
+        ip_params           = dict(params_base)
         ip_params["doktyp"] = "ip"
-        ip_data          = _get_json("/dokumentlista/", ip_params)
-        interpellationer = [_format_doc(d) for d in _normalize_docs(ip_data["dokumentlista"])]
+        ip_data             = _hamta_json("/dokumentlista/", ip_params)
+        interpellationer    = [_formatera_dokument(d) for d in _normalisera_dokument(ip_data["dokumentlista"])]
     except Exception:
         interpellationer = []
 
@@ -688,7 +869,8 @@ def _make_auth_app(asgi_app, api_key: str):
                 .removeprefix("Bearer ")
                 .strip()
             )
-            if token != api_key:
+            # secrets.compare_digest ger konstant-tidsjämförelse (skyddar mot timing-attack).
+            if not secrets.compare_digest(token, api_key):
                 return PlainTextResponse(
                     "Obehörig: ogiltig eller saknad API-nyckel.", status_code=401
                 )
@@ -703,6 +885,23 @@ def _make_auth_app(asgi_app, api_key: str):
 # ── Startpunkt ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Schema-init (idempotent, trygg mot DB-fel vid uppstart).
+    # Om databasen är nere startar servern ändå — init körs nästa gång.
+    try:
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location("init_db", _DB_INIT_PATH)
+        _mod  = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        _db_url = os.getenv("DATABASE_URL")
+        if not _db_url:
+            log.error("DATABASE_URL saknas i .env — schema-init hoppas over. "
+                      "Lagg till DATABASE_URL innan servern kan anvanda databasen.")
+        else:
+            _mod.initiera_schema(_db_url)
+            log.info("Schema initierat.")
+    except Exception as _e:
+        log.warning("Schema-init misslyckades (%s) — servern startar ändå.", _e)
+
     if MCP_TRANSPORT == "http":
         import uvicorn
 
@@ -710,7 +909,7 @@ if __name__ == "__main__":
         # lika snabbt som efterföljande. Misslyckas modellen att laddas syns det
         # direkt i loggarna — inte vid det första användaranropet.
         log.info("Preladdar embedding-modell...")
-        get_store()._get_model()
+        _hamta_store()._hamta_modell()
         log.info("Embedding-modell redo")
 
         # Hämta ASGI-appen från FastMCP

@@ -1,12 +1,16 @@
 """
-db/init_db.py — Initierar databasen för arbetsström 3
+db/init_db.py — Initierar och migrerar databasen för arbetsström 3
 
-Läser DATABASE_URL från .env och skapar rätt tabeller beroende på databastyp:
+Läser DATABASE_URL från .env och skapar/migrerar rätt tabeller beroende på
+databastyp:
   - postgresql://...  →  PostgreSQL + pgvector  (schema_postgres.sql)
   - sqlite:///...     →  SQLite + sqlite-vec    (schema_sqlite.sql)
 
-Körning:
+Körning (engångsinitiering eller migration):
     python db/init_db.py
+
+Anropas även automatiskt vid MCP-serveruppstart via mcp_server.py — alla
+funktioner är idempotenta och säkra att köra upprepade gånger.
 
 Krav (PostgreSQL):
     pip install psycopg2-binary pgvector
@@ -24,12 +28,13 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / '.env')
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///riksdag_api.db")
-SCHEMA_DIR = Path(__file__).parent
+# DATABASE_URL utan default — ett odefinierat val ger tydligt felmeddelande i main().
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+SCHEMA_DIR   = Path(__file__).parent
 
 
 def init_postgres(url: str) -> None:
-    """Initierar PostgreSQL-databas med pgvector."""
+    """Initierar PostgreSQL-databas med baseline-schema och kör migrationer."""
     try:
         import psycopg2
     except ImportError:
@@ -54,20 +59,20 @@ def init_postgres(url: str) -> None:
 
 
 def init_sqlite(url: str) -> None:
-    """Initierar SQLite-databas med sqlite-vec."""
+    """Initierar SQLite-databas med baseline-schema och kör migrationer."""
     try:
         import sqlite_vec
     except ImportError:
         print("Fel: sqlite-vec saknas. Kör: pip install sqlite-vec", file=sys.stderr)
         sys.exit(1)
 
-    # Extrahera filsökväg ur URL (sqlite:///path/to/file.db)
     db_path = url.replace("sqlite:///", "")
 
+    # Baseline-schemat (CREATE TABLE/INDEX IF NOT EXISTS — idempotent)
     schema = (SCHEMA_DIR / "schema_sqlite.sql").read_text(encoding="utf-8")
 
     conn = sqlite3.connect(db_path)
-    sqlite_vec.load(conn)          # Laddar sqlite-vec-tillägget
+    sqlite_vec.load(conn)
     conn.executescript(schema)
 
     # sqlite-vec virtual table skapas separat (kräver att tillägget är laddat)
@@ -78,61 +83,64 @@ def init_sqlite(url: str) -> None:
         )
     """)
     conn.commit()
+
+    # Kör migrationer
+    _migrera_sqlite_v3_0_0(conn)
+
     conn.close()
 
     print(f"SQLite-databas initierad: {db_path}")
 
 
-
-
-def migrate_add_related_hints(url: str) -> None:
+def _migrera_sqlite_v3_0_0(conn: sqlite3.Connection) -> None:
     """
-    Lägger till kolumnen relaterat_tips om den saknas (migrering av befintlig databas).
-    Säker att köra flera gånger — kolumnen läggs inte till om den redan finns.
+    Migration v3.0.0: lägger till senast_anvand för LRU-eviction.
+    Säker att köra flera gånger — kolumnen läggs bara till om den saknas.
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(dokument)").fetchall()]
+    if "senast_anvand" not in cols:
+        conn.execute("ALTER TABLE dokument ADD COLUMN senast_anvand INTEGER")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dokument_senast_anvand "
+            "ON dokument (senast_anvand ASC)"
+        )
+        conn.commit()
+
+
+def initiera_schema(url: str) -> None:
+    """
+    Idempotent schema-init och migration.
+
+    Anropas från mcp_server.py vid uppstart. Alla operationer är omslutna
+    i try/except i anroparen så att servern startar även om databasen är nere.
+
+    Anropas även direkt via main() när skriptet körs manuellt.
     """
     if url.startswith("postgresql://") or url.startswith("postgres://"):
-        try:
-            import psycopg2
-            conn = psycopg2.connect(url)
-            conn.autocommit = True
-            with conn.cursor() as cur:
-                cur.execute("""
-                    ALTER TABLE riksdag_api.dokument
-                    ADD COLUMN IF NOT EXISTS relaterat_tips TEXT
-                """)
-            conn.close()
-            print("PostgreSQL: relaterat_tips kolumn OK.")
-        except Exception as e:
-            print(f"PostgreSQL-migrering misslyckades: {e}", file=sys.stderr)
+        init_postgres(url)
     elif url.startswith("sqlite:///"):
-        try:
-            import sqlite3 as _sq
-            db_path = url.replace("sqlite:///", "")
-            conn = _sq.connect(db_path)
-            # SQLite stöder inte IF NOT EXISTS i ALTER TABLE — kontrollera manuellt
-            cols = [r[1] for r in conn.execute("PRAGMA table_info(dokument)").fetchall()]
-            if "relaterat_tips" not in cols:
-                conn.execute("ALTER TABLE dokument ADD COLUMN relaterat_tips TEXT")
-                conn.commit()
-                print("SQLite: relaterat_tips kolumn tillagd.")
-            else:
-                print("SQLite: relaterat_tips kolumn finns redan.")
-            conn.close()
-        except Exception as e:
-            print(f"SQLite-migrering misslyckades: {e}", file=sys.stderr)
+        init_sqlite(url)
+    else:
+        raise ValueError(
+            f"Okänt DATABASE_URL-format: {url!r}\n"
+            "Ange antingen postgresql://... eller sqlite:///..."
+        )
+
 
 def main() -> None:
+    if not DATABASE_URL:
+        print(
+            "Fel: DATABASE_URL saknas. Ange anslutningsstrang i .env:\n"
+            "  postgresql://anvandare:losenord@localhost:5432/riksdagstryck\n"
+            "  sqlite:///riksdag_api.db",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     print(f"DATABASE_URL: {DATABASE_URL}")
-
-    migrate_add_related_hints(DATABASE_URL)
-
-    if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-        init_postgres(DATABASE_URL)
-    elif DATABASE_URL.startswith("sqlite:///"):
-        init_sqlite(DATABASE_URL)
-    else:
-        print(f"Fel: okänt URL-format: {DATABASE_URL}", file=sys.stderr)
-        print("Ange antingen postgresql://... eller sqlite:///...", file=sys.stderr)
+    try:
+        initiera_schema(DATABASE_URL)
+    except ValueError as e:
+        print(f"Fel: {e}", file=sys.stderr)
         sys.exit(1)
 
 

@@ -5,12 +5,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 API_BASE = os.getenv("RIKSDAG_API_BASE", "https://data.riksdagen.se")
+
+HEADERS = {"User-Agent": "mcp-for-riksdagens-oppna-data/1.0 (+https://github.com/MagnusKolsjo/mcp-for-riksdagens-oppna-data)"}
 OK = "OK"; FAIL = "FEL"; WARN = "?"
 
 
 def get_json(path, params):
     params["utformat"] = "json"
-    r = httpx.get(f"{API_BASE}{path}", params=params, timeout=30)
+    r = httpx.get(f"{API_BASE}{path}", params=params, timeout=30, headers=HEADERS)
     r.raise_for_status()
     return r.json()
 

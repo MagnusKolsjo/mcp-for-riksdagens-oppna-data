@@ -4,6 +4,197 @@ Alla betydande ändringar dokumenteras här.
 Formatet följer [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
+## [3.0.0] — 2026-05-21
+
+### Brytande ändringar
+
+**`rd_search`** returnerar nu en dict i stället för en lista:
+```json
+{"antal_traffar": 42, "antal_returnerade": 10, "traffar": [...]}
+```
+Klienter som itererade direkt över svaret måste uppdateras till att läsa `.traffar`.
+
+Varje träff i `traffar` innehåller tre nya fält: `notis` (sammanfattning),
+`organ` (handläggande organ/utskott) och `pdf_url` (länk till PDF-bilaga om sådan finns).
+
+**`rd_get_anforanden`** returnerar nu en dict i stället för en lista:
+```json
+{"antal_returnerade": ..., "anforanden": [...]}
+```
+Varje anförande innehåller fem nya fält: `dok_id`, `anforande_nummer`, `iid`
+(talarens intressent_id), `rel_dok_id` och `kammaraktivitet`. Fältet
+`anforandetext` levereras nu som ren text (HTML-strippad).
+Fältet `antal_traffar` finns **inte** — API:et `/anforandelista/` exponerar inte
+totalantalet (se Buggfixar NB1).
+
+**`rd_get_voteringar`** returnerar nu en dict i stället för en lista:
+```json
+{"antal_returnerade": ..., "voteringar": [...]}
+```
+Ny parameter `sz` (standard 100, max 100).
+Fälten `antal_traffar` och `pagination_hint` finns **inte** — API:et
+`/voteringlista/` exponerar inte totalantalet (se Buggfixar NB1/NB3).
+
+**`rd_search_in_document`** returnerar nu en dict i stället för en lista:
+```json
+{"antal_returnerade": 5, "traffar": [...]}
+```
+
+**`rd_list_riksmoten`** returnerar nu en dict i stället för en lista:
+```json
+{"antal_returnerade": ..., "riksmoten": [...]}
+```
+
+**`rd_resolve_sfs`** returnerar nu en dict i stället för en lista:
+```json
+{"antal_returnerade": ..., "traffar": [...]}
+```
+
+**`rd_search_ledamoter`** returnerar nu en dict i stället för en lista:
+```json
+{"antal_traffar": ..., "antal_returnerade": ..., "ledamoter": [...]}
+```
+
+**`rd_get_ledamot`**: fälten `from_ar` och `tom_ar` i uppdragslistan bytta mot
+`from_datum` och `tom_datum` (innehåller nu datumsträng `"ÅÅÅÅ-MM-DD HH:MM:SS"`
+i stället för enbart år).
+
+**`rd_get_document`** returnerar inte längre `relaterat_tips`. Relationsdata
+hämtas alltid färsk via `rd_get_context` och ska inte läsas ur dokumentcachen.
+
+**`rd_list_riksmoten`** genereras nu programmatiskt och täcker hela perioden
+1867–idag. Formaten är: kalenderår 1867–1975, övergångssession `"1975/76"`,
+brutet format `"1976/77"` och framåt. Tidigare returnerades bara de riksmöten
+som råkade ingå i de senaste 200 propositionerna i API-svaret.
+
+**Miljövariabler** med nya primärnamn (gamla namn stöds parallellt):
+- `EMBEDDING_MODEL` → `EMBEDDING_MODELL`
+- `CACHE_TTL_CURRENT_SESSION_DAYS` → `CACHE_TTL_AKTUELLT_RIKSMOTE_DAGAR`
+
+### Tillagt
+
+- LRU-eviction implementerad: kolumnen `senast_anvand` spårar senaste läsningstidpunkt
+  per dokument. `_stada_cache()` i `document_store.py` tar bort 20 äldst-använda
+  dokument när cachen överstiger `CACHE_MAX_SIZE_GB`.
+- Idempotent schema-init anropas automatiskt vid serveruppstart (`__main__` i
+  `mcp_server.py`) — servern startar även om databasen är nere vid uppstart.
+- `db/init_db.py` exponerar `initiera_schema(url)` som publik funktion.
+
+### Ändrat
+
+- `document_store.py`: per-call-anslutningar ersätter den globala
+  `self._conn`-instansen. Varje databasoperation öppnar och stänger sin
+  egen anslutning — eliminerar problem med inaktuella anslutningar vid långa
+  vilotider. Hjälparmetoderna `_ar_postgres()`, `_hamta_db()`, `_ph()` och
+  `_prefix()` kapslar in all backend-specifik logik.
+- Alla engelska funktionsnamn i `mcp_server.py` och `document_store.py`
+  ersatta med svenska identifierare (Konv 10):
+  - `_get_json` → `_hamta_json`, `_normalize_docs` → `_normalisera_dokument`,
+    `_format_doc` → `_formatera_dokument`, `_extract_sfs_nr` → `_extrahera_sfs_nr`,
+    `_normalize_persons` → `_normalisera_personer`, `_format_person` → `_formatera_person`,
+    `get_store` → `_hamta_store` (mcp_server.py)
+  - `get_document` → `hamta_dokument`, `search_in_document` → `sok_i_dokument`,
+    `get_related` → `hamta_relaterade`, `_fetch_from_api` → `_hamta_fran_api`,
+    `_fetch_dokumentstatus` → `_hamta_dokumentstatus`, `_index_and_store` → `_indexera_och_lagra`,
+    `_get_model` → `_hamta_modell`, `_embed` → `_badda_in`, `_is_valid_cache` → `_giltig_cache`,
+    `_fetch_cache_meta` → `_hamta_cache_metadata`, `_load_from_cache` → `_las_fran_cache`,
+    `_store_postgres` → `_lagra_postgres`, `_vector_search` → `_vektor_sok`,
+    `_store_sqlite` → `_lagra_sqlite`, `_chunk_text` → `_dela_text_i_chunks`,
+    `_strip_html` → `_strippa_html`, `_current_riksmote` → `_aktuellt_riksmote`,
+    `_build_riksdagen_url` → `_bygg_riksdagen_url` (document_store.py)
+- `db/schema_postgres.sql` och `db/schema_sqlite.sql` strukturerade med explicit
+  BASELINE v1.0-block (låst) och MIGRATIONER-block för framtida ändringar.
+- `migrate_add_related_hints()` borttagen ur `db/init_db.py` (genomförd migration
+  från v1.2.0, numera onödig).
+- README.md: variabelnamnen uppdaterade, LRU-eviction dokumenterad, repo-URL korrigerad.
+
+### Säkerhet
+
+- Bearer-tokenvalidering använder nu `secrets.compare_digest` (konstant exekveringstid)
+  i stället för `==`. Eliminerar timing-attack-möjlighet vid HTTP-transport (B3).
+
+### Buggfixar
+
+- **B1 — `antal_traffar` alltid 0**: varje API-endpoint använder olika JSON-nycklar
+  för antalet träffar (`@traffar`, `@antal`). Alla tre berörda endpoints läser nu
+  rätt nyckel.
+- **B2 — OCR-varning missade 1971–1994-material**: material inskannat 1971–1994 har
+  `htmlformat='skanning2007'` men `status='importerad'`. Normaliseras nu till
+  `status='ocr'` vid indexering, så att cachen kan flagga utan tillgång till
+  `htmlformat`. OCR-varning kontrollerar nu båda fälten.
+- **B4 — SQLite LRU-loop**: SQLite-filen krymper inte efter `DELETE` utan explicit
+  `VACUUM`. `_stada_cache()` kör nu `VACUUM` efter eviction, vilket stoppar loopen
+  där storlekskontrollen triggade eviction om och om igen.
+- **B5 — `chunk_embeddings` läcker**: `vec0`-virtuella tabellen har ingen FK-kaskad,
+  vilket lät orphan-embeddings ackumuleras vid re-indexering och LRU-eviction.
+  Manuell `DELETE FROM chunk_embeddings WHERE chunk_id IN (SELECT id FROM chunks
+  WHERE dok_id = ?)` körs nu i båda kodvägarna.
+- **B6 — dubbel-fetch av dokumentstatus**: `/dokument/{id}/text` och
+  `/dokumentstatus/{id}` returnerar identisk XML. Den nya hjälpmetoden
+  `_extrahera_relationer_ur_xml(root)` extraherar relationsdata ur redan-parsad XML,
+  vilket eliminerar ett extra HTTP-anrop per indexering.
+- **B7 — inkompatibla `_strippa_html`**: `mcp_server.py` hade en lokal regex-variant
+  som inte avkodade HTML-entiteter (`&amp;`, `&lt;` m.fl.). Importerar nu
+  `_strippa_html` från `document_store.py` (BeautifulSoup) i hela servern.
+- **NB1/NB3 — `antal_traffar` vilseledande i `rd_get_anforanden` och
+  `rd_get_voteringar`**: API:et `/anforandelista/` och `/voteringlista/` exponerar
+  inte totalantalet — `@antal` är alltid lika med antal returnerade poster.
+  Fältet `antal_traffar` (alltid = `antal_returnerade`) och den döda koden
+  `pagination_hint` (villkoret var aldrig sant) är borttagna ur båda verktygen.
+  Klienter som läser `antal_traffar` ur dessa svar måste uppdateras.
+- **NB2 — OCR-varning missade söksvar för 1971–1994-material**: `_formatera_dokument`
+  kontrollerade `htmlformat='skanning2007'`, men det fältet finns inte i
+  `/dokumentlista/`-svar. Ny heuristik: om `status='importerad'` och riksmötet
+  är före 1995 flaggas dokumentet som inskannat material. Hjälpfunktionen
+  `_rm_ar_fore_1995(rm)` hanterar både kalenderårsformat och brutet format.
+
+### Förbättringar
+
+- **Bg2**: `rd_get_voteringar` har ny `sz`-parameter.
+- **Bg4**: `SOU_HAMTNING_AKTIV=false` kontrollerar nu cachen innan HTTP-preflight,
+  vilket undviker ett nätverksanrop för redan-cachade dokument.
+- **Bg5**: `_stada_cache()` dokumenterar nu att rader med `senast_anvand IS NULL`
+  hoppas över och att cachen kan överstiga gränsen tillfälligt efter migration.
+- **K3**: `DATABASE_URL` har inget längre något default-värde varken i
+  `document_store.py` eller `db/init_db.py` — ett saknat värde ger tydligt
+  felmeddelande i stället för att tyst välja SQLite.
+- **K5**: `migrate_to_riksdagstryck.py` (engångsskript från 2026-05-03) flyttat till
+  `legacy/` för att inte förväxlas med installationsskript.
+- **K7**: `_RELEVANTA_RELATIONSTYPER` i `document_store.py` har nu en tydlig varning
+  om att jämförelsen är case-känslig och att stavning aldrig ska ändras utan empirisk
+  verifiering mot live-API.
+- **K8**: `_dela_beteckning` har ett kommentarblock om att prefixer kräver mellanslag
+  (`"prop. 2024/25"` fungerar, `"prop.2024/25"` utan mellanslag faller igenom).
+- **K10**: `_hamta_cache_storlek_gb` loggar nu `WARNING` vid fel i stället för att
+  tyst returnera `0.0`.
+- README.md: repo-URL korrigerad till `mcp-for-riksdagens-oppna-data`, databasnamnet
+  korrigerat till `riksdagstryck`, licenslänk uppdaterad, OCR-beskrivning utökad
+  med 1971–1994-perioden, verifieringsskript markerade som dev-verktyg (K1, K6, B2).
+- `install.sh`: `riksdag_rag` ersatt med `riksdagstryck` (K2); SQLite-filnamnet i
+  exempel-hint korrigerat från `riksdagstryck.db` till `riksdag_api.db` (NK3).
+- `requirements.txt`: tydligare instruktion om att avkommentera `sqlite-vec` (K4).
+- README.md: `DATABASE_URL`-standardvärde i konfigurationstabellen ändrat från
+  `sqlite:///riksdag_api.db` till `(måste sättas)` — värdet saknades i koden
+  men tabellen gav sken av ett fungerande default (NK2).
+- README.md: Licenslänk korrigerad från `../LICENSE.md` till `LICENSE.md` (NK1).
+- `hamta_relaterade` docstring korrigerad: XML-storleken är inte "10–50 KB" utan
+  kan nå 6 MB för stora propositioner med många följdmotioner (Bg1).
+
+### Uppgradering från v2.x
+
+1. Kör `python db/init_db.py` för att lägga till `senast_anvand`-kolumnen.
+2. Uppdatera `.env`: byt `EMBEDDING_MODEL` → `EMBEDDING_MODELL` och
+   `CACHE_TTL_CURRENT_SESSION_DAYS` → `CACHE_TTL_AKTUELLT_RIKSMOTE_DAGAR`
+   (gamla namn fungerar fortfarande).
+3. Uppdatera klienter som läser direkt ur svaren från `rd_search`,
+   `rd_get_anforanden`, `rd_get_voteringar`, `rd_search_in_document`,
+   `rd_list_riksmoten`, `rd_resolve_sfs`, `rd_search_ledamoter`
+   (se Brytande ändringar ovan).
+4. Ta bort eventuella läsningar av `relaterat_tips` ur `rd_get_document`-svaret;
+   använd `rd_get_context` i stället.
+5. Uppdatera läsningar av `from_ar`/`tom_ar` i `rd_get_ledamot`-svaret till
+   `from_datum`/`tom_datum`.
+
 ## [2.2.1] - 2026-05-18
 
 ### Säkerhet
