@@ -1,5 +1,6 @@
 # Konfiguration med hemligheter
 .env
+.DS_Store
 
 # Lokal databas och cache
 *.db
