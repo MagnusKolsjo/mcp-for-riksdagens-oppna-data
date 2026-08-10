@@ -73,7 +73,7 @@ DATABASE_URL=postgresql://mitt_db_anvandare:byt_till_eget_starkt_losenord@localh
 ```
 
 Tabellerna placeras i PostgreSQL-schemat `riksdag_api`, isolerat från andra
-arbetsströmmar som delar samma databasinstans. Schemat skapas automatiskt
+MCP-servrar som delar samma databasinstans. Schemat skapas automatiskt
 av `db/init_db.py`.
 
 **SQLite** med sqlite-vec:
@@ -108,6 +108,7 @@ Starta om MCP-klienten så ansluter den till servern automatiskt.
 | `rd_search` | Söker dokument på fritext, typ, år eller riksmöte. Returnerar `antal_traffar`, `antal_returnerade` och `traffar`-lista med `notis`, `organ` och `pdf_url`. |
 | `rd_get_document` | Hämtar och cachar ett dokument med inledning och metadata |
 | `rd_search_in_document` | Semantisk sökning inom ett specifikt dokument |
+| `rd_get_chunk` | Hämtar ett textstycke på position, valfritt med omgivande stycken |
 | `rd_get_context` | Hämtar kontextpaket: relaterade dokument grupperade per relationstyp (alltid färsk data) |
 | `rd_get_anforanden` | Hämtar debattinlägg med fulltext (HTML-strippad). Inkluderar `iid`, `rel_dok_id`, `kammaraktivitet`. |
 | `rd_get_voteringar` | Hämtar voteringsdata med `antal_traffar` |
@@ -116,6 +117,26 @@ Starta om MCP-klienten så ansluter den till servern automatiskt.
 | `rd_search_ledamoter` | Söker ledamöter på namn, parti, valkrets eller status |
 | `rd_get_ledamot` | Hämtar fullständig profil med uppdragshistorik för en ledamot |
 | `rd_get_ledamot_aktivitet` | Hämtar en ledamots senaste anföranden, motioner och interpellationer |
+
+### Att läsa ett stort dokument
+
+En proposition kan vara flera hundra sidor. `rd_get_document` returnerar därför
+metadata och en **inledning** på 500 tecken — inte dokumentets text. Svaret anger
+`antal_stycken` så att omfattningen framgår, och pekar ut de två vägarna vidare:
+
+```
+rd_search_in_document(dok_id, query)   # hitta det du söker
+rd_get_chunk(dok_id, chunk_index)      # läs på position
+```
+
+Texten delas i stycken om 800 tecken med 200 teckens överlapp, så att ingen mening
+kan falla mellan två stycken. Varje sökträff bär sin adress (`chunk_index` samt
+`tecken_start`/`tecken_slut`), vilket gör att en träff kan hämtas tillbaka med
+omgivning: `rd_get_chunk(dok_id, chunk_index, kontext=1)`.
+
+**Vid ordagranna citat:** citera aldrig ur ett utdrag som är markerat `trunkerad`.
+Hämta hela stycket först. Textreturnerande verktyg tar `max_tecken` och
+`fran_tecken`, och ett kapat svar bär `tecken_totalt` och `fortsatt_fran_tecken`.
 
 ## Dokumenttyper
 

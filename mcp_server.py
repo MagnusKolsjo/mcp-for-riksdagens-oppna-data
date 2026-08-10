@@ -69,7 +69,7 @@ MCP_API_KEY   = os.getenv("MCP_API_KEY",   "")
 
 # SOU-flaggor — styr om SOU-sökning resp. SOU-hämtning/lagring exponeras.
 # Standard: true (fullt funktionell som fristående server).
-# Satt till false i installationer där liu-sou-servern (ström 4) hanterar SOU
+# Satt till false i installationer där en separat SOU-server hanterar SOU
 # för att undvika att SOU-fulltext lagras i två databaser.
 SOU_SOKNING_AKTIV  = os.getenv("SOU_SOKNING_AKTIV",  "true").lower() == "true"
 SOU_HAMTNING_AKTIV = os.getenv("SOU_HAMTNING_AKTIV", "true").lower() == "true"
@@ -285,7 +285,63 @@ def _formatera_person(p: dict) -> dict:
     }
 
 
-mcp = FastMCP("riksdag-oppna-data")
+mcp = FastMCP(
+    "riksdag-oppna-data",
+    instructions=(
+        "MCP-server för Riksdagens öppna data (1867–idag): propositioner, motioner, "
+        "betänkanden, protokoll, anföranden, voteringar och ledamöter. "
+        "Verktygen har prefixet rd_. "
+        "STORA DOKUMENT: en proposition kan vara flera hundra sidor. rd_get_document "
+        "returnerar därför metadata och en inledning, inte hela texten. Läs vidare på "
+        "två sätt: rd_search_in_document söker semantiskt i dokumentet, och "
+        "rd_get_chunk hämtar ett textstycke på nummer med valfri omgivning. "
+        "CITAT: varje träff och stycke bär sin adress (chunk_index samt "
+        "tecken_start/tecken_slut i dokumentet). Ett ordagrant citat får aldrig bygga "
+        "på ett utdrag som är markerat som kapat — hämta hela stycket med rd_get_chunk, "
+        "och använd kontext=1 när en mening löper över en styckegräns. "
+        "SVARSSTORLEK: textreturnerande verktyg tar max_tecken och fran_tecken; ett "
+        "kapat svar bär fälten trunkerad, tecken_totalt och fortsatt_fran_tecken."
+    ),
+)
+
+
+# ── Textutdrag och trunkering ─────────────────────────────────────────────────
+
+def _skar_ut(text: Optional[str], max_tecken: int, fran_tecken: int = 0) -> dict:
+    """
+    Skär ut ett textutdrag och redovisa alltid vad som kapats.
+
+    Trunkering utan markering är ett tyst datafel: svaret ser ut att vara hela
+    innehållet. Returnerar därför ett dict-fragment som slås ihop med verktygets
+    svar och alltid berättar hur mycket som visas av hur mycket.
+
+    max_tecken <= 0 betyder ingen trunkering. Klipper på ordgräns, aldrig mitt
+    i ett ord.
+    """
+    text   = text or ""
+    totalt = len(text)
+    start  = max(0, min(fran_tecken, totalt))
+    rest   = text[start:]
+
+    if max_tecken and max_tecken > 0 and len(rest) > max_tecken:
+        utdrag    = rest[:max_tecken]
+        brytpunkt = max(utdrag.rfind(" "), utdrag.rfind("\n"))
+        if brytpunkt > max_tecken * 0.6:
+            utdrag = utdrag[:brytpunkt]
+        utdrag    = utdrag.rstrip()
+        trunkerad = True
+    else:
+        utdrag    = rest
+        trunkerad = False
+
+    slut = start + len(utdrag)
+    return {
+        "text":                 utdrag,
+        "tecken_totalt":        totalt,
+        "tecken_visade":        len(utdrag),
+        "trunkerad":            trunkerad,
+        "fortsatt_fran_tecken": slut if slut < totalt else None,
+    }
 
 
 @mcp.tool()
@@ -384,13 +440,19 @@ def rd_get_document(dok_id: str) -> dict:
     """
     Hamtar ett riksdagsdokument och cachar det lokalt for semantisk sokning.
 
-    Returnerar metadata och de forsta 500 tecknen av fulltexten (inledning)
-    samt en lank till riksdagen.se.
+    Returnerar metadata och de första 500 tecknen av fulltexten (inledning)
+    samt en länk till riksdagen.se.
 
-    For relationsdata (foljdmotioner, behandlande betankande m.m.):
-    anvand rd_get_context — relationsdata hamtas alltid fersk darifrån.
-    For djupsokning i fulltexten: anvand rd_search_in_document.
-    Dokument aldre an ca 1960 kan vara OCR-skannade -- se ocr_varning i svaret.
+    VIKTIGT: fältet `inledning` är just en inledning — inte dokumentets text.
+    En proposition kan vara flera hundra sidor, och hela texten skulle spränga
+    svarsgränsen. Fältet `antal_stycken` visar hur mycket som finns. Läs vidare
+    på två sätt:
+      rd_search_in_document(dok_id, query)      -- hitta det du söker
+      rd_get_chunk(dok_id, chunk_index)         -- läs på position, för citat
+
+    För relationsdata (följdmotioner, behandlande betänkande m.m.):
+    använd rd_get_context — relationsdata hämtas alltid färsk därifrån.
+    Dokument äldre än ca 1960 kan vara OCR-skannade — se ocr_varning i svaret.
     """
     if not SOU_HAMTNING_AKTIV:
         store = _hamta_store()
@@ -413,7 +475,35 @@ def rd_get_document(dok_id: str) -> dict:
         except Exception:
             pass  # Om metadatakollen misslyckas, fall igenom till vanlig hamtning
 
-    return _hamta_store().hamta_dokument(dok_id)
+    return _berika_med_omfattning(_hamta_store().hamta_dokument(dok_id), dok_id)
+
+
+def _berika_med_omfattning(svar: dict, dok_id: str) -> dict:
+    """
+    Kompletterar ett dokumentsvar med hur mycket text som faktiskt finns.
+
+    Utan detta ser `inledning` ut som dokumentets innehåll, trots att den är
+    de första 500 tecknen av något som kan vara hundratals sidor. Fälten visar
+    omfattningen och pekar ut vägen vidare.
+    """
+    if not isinstance(svar, dict) or svar.get("fel"):
+        return svar
+    try:
+        antal = _hamta_store().antal_chunkar(dok_id)
+    except Exception as exc:
+        log.debug("Kunde inte räkna textstycken för %s: %s", dok_id, exc)
+        return svar
+
+    if antal:
+        svar["antal_stycken"] = antal
+        svar["inledning_ar_utdrag"] = True
+        svar["las_vidare"] = (
+            f"Fältet inledning är de första {len(svar.get('inledning') or '')} tecknen. "
+            f"Dokumentet har {antal} textstycken — sök med "
+            f"rd_search_in_document('{dok_id}', <fråga>) eller läs på position med "
+            f"rd_get_chunk('{dok_id}', <chunk_index>)."
+        )
+    return svar
 
 
 @mcp.tool()
@@ -421,27 +511,119 @@ def rd_search_in_document(
     dok_id: str,
     query: str,
     top_k: int = 5,
+    max_tecken: int = 0,
 ) -> dict:
     """
-    Semantisk sokning inom ett specifikt riksdagsdokument.
+    Semantisk sökning inom ett specifikt riksdagsdokument.
 
-    Anvands nar ett dokument ar for stort for att lasa i sin helhet.
-    Returnerar de stycken som ar semantiskt mest relevanta for fragan.
+    Används när ett dokument är för stort för att läsa i sin helhet.
+    Returnerar de stycken som är semantiskt mest relevanta för frågan.
 
     Parametrar:
-        dok_id -- Dokumentets ID (hamtas via rd_search)
-        query  -- Sokning pa naturligt sprak, t.ex. "torghandelns frihet"
-        top_k  -- Antal stycken att returnera (standard 5)
+        dok_id     -- Dokumentets ID (hämtas via rd_search)
+        query      -- Sökning på naturligt språk, t.ex. "torghandelns frihet"
+        top_k      -- Antal stycken att returnera (standard 5)
+        max_tecken -- Teckentak per träff (0 = hela stycket, vilket är
+                      standard eftersom ett stycke bara är ~800 tecken)
 
     Returnerar dict med nycklarna:
-        antal_returnerade -- antal returnerade stycken (= top_k eller farre)
+        antal_returnerade -- antal returnerade stycken (= top_k eller färre)
         traffar           -- lista med chunk_index, text, tecken_start,
                              tecken_slut och score (cosinus-likhet 0-1)
+
+    Varje träff bär sin adress i dokumentet. Vill du läsa vidare före eller
+    efter en träff: rd_get_chunk(dok_id, chunk_index, kontext=1).
     """
     traffar = _hamta_store().sok_i_dokument(dok_id, query, top_k)
+
+    if max_tecken and max_tecken > 0:
+        for t in traffar:
+            utdrag = _skar_ut(t.get("text"), max_tecken)
+            t["text"]          = utdrag["text"]
+            t["tecken_totalt"] = utdrag["tecken_totalt"]
+            t["trunkerad"]     = utdrag["trunkerad"]
+
     return {
         "antal_returnerade": len(traffar),
         "traffar":           traffar,
+    }
+
+
+@mcp.tool()
+def rd_get_chunk(
+    dok_id: str,
+    chunk_index: int,
+    kontext: int = 0,
+    max_tecken: int = 0,
+    fran_tecken: int = 0,
+) -> dict:
+    """
+    Hämtar ett textstycke ur ett riksdagsdokument på styckenummer.
+
+    Detta är verktyget för citatgranskning och för att läsa vidare förbi en
+    sökträff. rd_search_in_document hittar var något står; det här hämtar
+    texten där, oavsett om den matchar någon sökfråga.
+
+    Parametrar:
+        dok_id      -- Dokumentets ID (hämtas via rd_search)
+        chunk_index -- Styckets nummer, ur en träff i rd_search_in_document
+        kontext     -- Ta även med så här många stycken före och efter
+                       (standard 0, max 5). Använd 1 när en mening löper över
+                       en styckegräns.
+        max_tecken  -- Teckentak (0 = hela texten)
+        fran_tecken -- Börja vid denna teckenposition, för att bläddra vidare
+
+    Returnerar dokumentets metadata, styckets position och texten.
+
+    OBS: styckena överlappar med 200 tecken, så slutet av stycke N återkommer
+    i början av stycke N+1. Det är avsiktligt — ingen mening ska kunna falla
+    mellan två stycken.
+    """
+    kontext = min(max(0, kontext), 5)
+    store   = _hamta_store()
+
+    try:
+        rader = store.hamta_chunkar(
+            dok_id, chunk_index - kontext, chunk_index + kontext
+        )
+    except Exception as exc:
+        log.error("rd_get_chunk misslyckades (dok_id=%s): %s", dok_id, exc)
+        return {"fel": str(exc), "dok_id": dok_id}
+
+    if not rader:
+        # Skilj okänt dokument från giltigt dokument med okänt styckenummer —
+        # felmeddelandet ska visa vägen framåt, inte bara konstatera fel.
+        antal = store.antal_chunkar(dok_id)
+        if not antal:
+            return {
+                "fel": (
+                    f"Dokumentet '{dok_id}' har inga cachade textstycken. "
+                    "Hämta det först med rd_get_document(dok_id), som indexerar "
+                    "dokumentet lokalt."
+                ),
+                "dok_id": dok_id,
+            }
+        return {
+            "fel": (
+                f"Dokumentet '{dok_id}' har inget textstycke med chunk_index "
+                f"{chunk_index}. Dokumentet har {antal} stycken (numrerade från 0)."
+            ),
+            "dok_id":       dok_id,
+            "antal_stycken": antal,
+        }
+
+    text   = "\n\n".join(r["text"] or "" for r in rader)
+    utdrag = _skar_ut(text, max_tecken, fran_tecken)
+
+    return {
+        "dok_id":        dok_id,
+        "chunk_index":   chunk_index,
+        "chunk_fran":    rader[0]["chunk_index"],
+        "chunk_till":    rader[-1]["chunk_index"],
+        "antal_stycken": store.antal_chunkar(dok_id),
+        "tecken_start":  rader[0]["tecken_start"],
+        "tecken_slut":   rader[-1]["tecken_slut"],
+        **utdrag,
     }
 
 

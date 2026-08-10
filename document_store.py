@@ -253,6 +253,67 @@ class DocumentStore:
         query_vec = self._badda_in([query])[0]
         return self._vektor_sok(dok_id, query_vec, top_k)
 
+    def hamta_chunkar(
+        self,
+        dok_id: str,
+        fran_index: int,
+        till_index: int,
+    ) -> list[dict]:
+        """
+        Hämtar textstycken ur ett cachat dokument på styckenummer.
+
+        Motsvarigheten till sok_i_dokument när man vet var i dokumentet man vill
+        läsa i stället för vad man söker efter — nödvändig för att kunna
+        kontrollera ett ordagrant citat och för att läsa vidare förbi en träff.
+
+        Returnerar lista av dict med nycklarna:
+            chunk_index, text, tecken_start, tecken_slut
+        Tom lista om dokumentet saknas eller intervallet ligger utanför.
+        """
+        self.hamta_dokument(dok_id)   # säkerställ att dokumentet är cachat
+
+        ph     = self._ph()
+        prefix = self._prefix()
+        sql = (
+            f"SELECT chunk_index, text, tecken_start, tecken_slut "
+            f"FROM {prefix}chunks "
+            f"WHERE dok_id = {ph} AND chunk_index BETWEEN {ph} AND {ph} "
+            f"ORDER BY chunk_index"
+        )
+        conn = self._hamta_db()
+        try:
+            cur = conn.cursor()
+            cur.execute(sql, (dok_id, fran_index, till_index))
+            rader = cur.fetchall()
+        finally:
+            conn.close()
+
+        return [
+            {
+                "chunk_index":  r[0],
+                "text":         r[1],
+                "tecken_start": r[2],
+                "tecken_slut":  r[3],
+            }
+            for r in rader
+        ]
+
+    def antal_chunkar(self, dok_id: str) -> int:
+        """Antal textstycken som dokumentet delats i. 0 om det inte är cachat."""
+        ph     = self._ph()
+        prefix = self._prefix()
+        conn = self._hamta_db()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT count(*) FROM {prefix}chunks WHERE dok_id = {ph}",
+                (dok_id,),
+            )
+            rad = cur.fetchone()
+        finally:
+            conn.close()
+        return int(rad[0]) if rad else 0
+
     def hamta_relaterade(self, dok_id: str) -> dict:
         """
         Returnerar ett kontextpaket för ett dokument med alla relaterade dokument

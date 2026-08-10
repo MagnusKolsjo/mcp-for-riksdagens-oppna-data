@@ -4,6 +4,52 @@ Alla betydande ändringar dokumenteras här.
 Formatet följer [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
+## [3.1.0] — 2026-08-10
+
+### Tillagt
+
+- **`rd_get_chunk(dok_id, chunk_index, kontext, max_tecken, fran_tecken)`** — hämtar ett
+  textstycke på position i stället för på sökrelevans. Tidigare gick dokumentets text
+  bara att nå via semantisk sökning, vilket gjorde att en passage som inte matchade
+  någon fråga var oåtkomlig — och att ett citat inte kunde kontrolleras mot sin
+  omgivning. `kontext=1` tar med grannstyckena när en mening löper över en styckegräns.
+  Felmeddelandet skiljer ocachat dokument från giltigt dokument med okänt styckenummer.
+- **`max_tecken`** i `rd_search_in_document` och **`max_tecken`/`fran_tecken`** i
+  `rd_get_chunk`. Kapade svar bär `trunkerad`, `tecken_totalt`, `tecken_visade` och
+  `fortsatt_fran_tecken`, och kapas på ordgräns.
+- **`antal_stycken`, `inledning_ar_utdrag` och `las_vidare`** i `rd_get_document`.
+  Fältet `inledning` är 500 tecken ur ett dokument som kan ha över tusen textstycken;
+  utan de nya fälten framstod det som dokumentets innehåll.
+- **`instructions`-sträng på servern** — beskriver hur stora dokument läses, hur citat
+  kontrolleras och vad trunkeringsfälten betyder. Servern saknade tidigare en
+  beskrivning på servernivå.
+- Nya metoder `hamta_chunkar()` och `antal_chunkar()` i `document_store.py`.
+
+### Bakgrund
+
+Genomför projektets svarskontrakt (`00-las-forst.md` → "Svarskontraktet — storlek,
+trunkering, adressering och sökning") i den här servern. Inga ändringar i databasschemat
+— kolumnerna `chunk_index`, `tecken_start` och `tecken_slut` fanns redan men exponerades
+bara via semantisk sökning.
+
+**OBS vid uppgradering:** `rd_get_chunk` är ett nytt verktyg i en befintlig server.
+MCP-klienter som cachelägger verktygsindexet per servernamn kan behöva ett nytt
+servernamn i konfigurationen för att se det.
+
+---
+
+## [3.0.1] — 2026-05-22
+
+Publicerad 2026-05-22 (commit `30d5f60`, tagg `v3.0.1`). Posten skrevs in i
+efterhand 2026-08-10 — versionen taggades utan motsvarande CHANGELOG-post.
+
+### Ändrat
+
+- `.DS_Store` tillagd i `.gitignore`, och filen borttagen ur repots historik.
+  Ingen kodändring; inga API- eller beteendeförändringar.
+
+---
+
 ## [3.0.0] — 2026-05-21
 
 ### Brytande ändringar

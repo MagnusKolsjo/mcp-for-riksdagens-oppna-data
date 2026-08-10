@@ -123,13 +123,13 @@ def test_sfs():
 
     print("-" * 65)
     if hittade == len(TESTFALL):
-        print(f"  {OK} SLUTSATS: rd_resolve_sfs KAN byggas i arbetsström 3.")
+        print(f"  {OK} SLUTSATS: rd_resolve_sfs KAN byggas.")
         print(f"     SFS-nummer ar sökbara. Relevanta fält: {sfs_falt}")
     elif hittade > 0:
         print(f"  {WARN} SLUTSATS: Delvis stod ({hittade}/{len(TESTFALL)}). Undersok manuellt.")
     else:
         print(f"  {FAIL} SLUTSATS: rd_resolve_sfs KAN INTE byggas via riksdagens API.")
-        print(f"     Losning: sfsr_search_by_title i arbetsström 8 istallet.")
+        print(f"     Losning: titelsokning mot SFSR-servern istallet.")
 
 
 # ---------------------------------------------------------------------------

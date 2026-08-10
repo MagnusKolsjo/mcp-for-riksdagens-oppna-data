@@ -1,4 +1,4 @@
-# Arbetsström 3 — Riksdagens öppna data API
+# MCP-server för Riksdagens öppna data
 # Installera: pip install -r requirements.txt
 
 # MCP-server
