@@ -59,9 +59,13 @@ def init_postgres(url: str) -> None:
         cur.execute(schema)
     conn.close()
 
-    print("PostgreSQL-databas initierad.")
-    print("OBS: IVFFlat-indexet för embeddings skapas manuellt efter att data laddats in.")
-    print("  Se kommentaren i schema_postgres.sql.")
+    # stderr, inte stdout: initiera_schema() körs av mcp_server.py före
+    # stdio-transporten tar över stdout som sin protokollkanal — text på
+    # stdout där skulle blanda sig med JSON-RPC-strömmen.
+    print("PostgreSQL-databas initierad.", file=sys.stderr)
+    print("OBS: IVFFlat-indexet för embeddings skapas manuellt efter att data laddats in.",
+          file=sys.stderr)
+    print("  Se kommentaren i schema_postgres.sql.", file=sys.stderr)
 
 
 def init_sqlite(url: str) -> None:
@@ -95,7 +99,8 @@ def init_sqlite(url: str) -> None:
 
     conn.close()
 
-    print(f"SQLite-databas initierad: {db_path}")
+    # stderr — se motivering i init_postgres().
+    print(f"SQLite-databas initierad: {db_path}", file=sys.stderr)
 
 
 def _migrera_sqlite_v3_0_0(conn: sqlite3.Connection) -> None:
