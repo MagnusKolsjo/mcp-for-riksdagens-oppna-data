@@ -25,6 +25,7 @@ import os
 import re
 import sqlite3
 import sys
+import threading
 import time
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timezone
@@ -158,6 +159,18 @@ def _hamta_xml_text(element: ET.Element, tag: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Källfel — förväntade fel mot riksdagens API, skilda från interna buggar
+# ---------------------------------------------------------------------------
+
+class DokumentSaknas(Exception):
+    """Riksdagens öppna data har inget dokument med det angivna dok_id:t (HTTP 404)."""
+
+
+class KallanSvararInte(Exception):
+    """Riksdagens öppna data svarade inte som förväntat (annat än 404, eller nåddes inte alls)."""
+
+
+# ---------------------------------------------------------------------------
 # DocumentStore
 # ---------------------------------------------------------------------------
 
@@ -174,6 +187,11 @@ class DocumentStore:
 
     def __init__(self) -> None:
         self._model: Optional[object] = None
+        # Skyddar den lata inläsningen av embeddingmodellen (se _hamta_modell).
+        # Synkrona MCP-verktyg körs på arbetstrådar i mcp 2.x, så flera anrop
+        # kan nå _hamta_modell samtidigt — utan låset kan två trådar båda ladda
+        # modellen och den ena tilldelningen skriva över den andra.
+        self._model_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Backend-hjälpare (per-call-mönster)
@@ -368,8 +386,23 @@ class DocumentStore:
         """
         # Fulltext (XML med inbäddad HTML)
         text_url = f"{API_BASE}/dokument/{dok_id}/text"
-        r = httpx.get(text_url, headers=HEADERS, timeout=60)
-        r.raise_for_status()
+        try:
+            r = httpx.get(text_url, headers=HEADERS, timeout=60)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise DokumentSaknas(
+                    f"Riksdagens öppna data har inget dokument med dok_id "
+                    f"'{dok_id}'. Kontrollera id:t, t.ex. via rd_search."
+                ) from exc
+            raise KallanSvararInte(
+                f"Riksdagens öppna data svarade med fel {exc.response.status_code} "
+                f"vid hämtning av dok_id '{dok_id}'."
+            ) from exc
+        except httpx.RequestError as exc:
+            raise KallanSvararInte(
+                f"Kunde inte nå riksdagens öppna data för dok_id '{dok_id}': {exc}"
+            ) from exc
 
         root = ET.fromstring(r.text)
         fields = {}
@@ -477,8 +510,24 @@ class DocumentStore:
             extra:     dict med motgrund, motkat, mottagare, besvaradav, stalldtill
         """
         url = f"{API_BASE}/dokumentstatus/{dok_id}"
-        r   = httpx.get(url, headers=HEADERS, timeout=30)
-        r.raise_for_status()
+        try:
+            r = httpx.get(url, headers=HEADERS, timeout=30)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise DokumentSaknas(
+                    f"Riksdagens öppna data har ingen dokumentstatus för dok_id "
+                    f"'{dok_id}'. Kontrollera id:t, t.ex. via rd_search."
+                ) from exc
+            raise KallanSvararInte(
+                f"Riksdagens öppna data svarade med fel {exc.response.status_code} "
+                f"vid hämtning av dokumentstatus för dok_id '{dok_id}'."
+            ) from exc
+        except httpx.RequestError as exc:
+            raise KallanSvararInte(
+                f"Kunde inte nå riksdagens öppna data för dokumentstatus "
+                f"'{dok_id}': {exc}"
+            ) from exc
         root = ET.fromstring(r.text)
         return self._extrahera_relationer_ur_xml(root)
 
@@ -510,14 +559,24 @@ class DocumentStore:
     # ------------------------------------------------------------------
 
     def _hamta_modell(self):
-        """Lazy-laddar embeddingmodellen vid första anrop."""
+        """
+        Lazy-laddar embeddingmodellen vid första anrop.
+
+        Dubbelkontrollerad låsning: den snabba kontrollen utan lås täcker det
+        vanliga fallet (modellen redan laddad). Låset tas bara av den tråd som
+        faktiskt behöver ladda modellen; den andra kontrollen inne i låset
+        förhindrar att två trådar som båda hann förbi den första kontrollen
+        laddar modellen var för sig.
+        """
         if self._model is None:
-            from sentence_transformers import SentenceTransformer
-            print(
-                f"Laddar embeddingmodell: {EMBEDDING_MODELL} (tar ~30 s första gången)...",
-                file=sys.stderr
-            )
-            self._model = SentenceTransformer(EMBEDDING_MODELL)
+            with self._model_lock:
+                if self._model is None:
+                    from sentence_transformers import SentenceTransformer
+                    print(
+                        f"Laddar embeddingmodell: {EMBEDDING_MODELL} (tar ~30 s första gången)...",
+                        file=sys.stderr
+                    )
+                    self._model = SentenceTransformer(EMBEDDING_MODELL)
         return self._model
 
     def _badda_in(self, texts: list[str]) -> list:
