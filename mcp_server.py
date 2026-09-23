@@ -27,7 +27,7 @@ Transport-lägen (styrs via MCP_TRANSPORT i .env):
   http (hostad driftsättning):
     MCP_TRANSPORT=http python3 mcp_server.py
     Servern lyssnar på MCP_HOST:MCP_PORT (standard 127.0.0.1:8000).
-    Sätt MCP_API_KEY för Bearer-token-autentisering.
+    MCP_API_KEY krävs (fail-closed) — utan den avbryts uppstarten.
     I produktion: lägg en reverse proxy (t.ex. Nginx) framför servern.
 
 Konfiguration via .env (se config.example.env).
@@ -36,16 +36,19 @@ Konfiguration via .env (se config.example.env).
 import logging
 import os
 import re
-import secrets
+import threading
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Optional
+from typing import Any, NotRequired, Optional, TypedDict
 
 import httpx
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
-from document_store import DocumentStore, _strippa_html
+from document_store import DocumentStore, DokumentSaknas, KallanSvararInte, _strippa_html
+from mcp_annotationer import CACHE_HINTAR, LASNING_DB, LASNING_EXTERN
+from mcp_transport import starta
 
 load_dotenv(Path(__file__).parent / '.env')
 
@@ -61,11 +64,8 @@ HEADERS = {
     "User-Agent": "mcp-for-riksdagens-oppna-data/1.0 (+https://github.com/MagnusKolsjo/mcp-for-riksdagens-oppna-data)",
 }
 
-# Transport och autentisering (regel 8 i projektstandarden)
-MCP_TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio").lower()
-MCP_HOST      = os.getenv("MCP_HOST",      "127.0.0.1")
-MCP_PORT      = int(os.getenv("MCP_PORT",  "8000"))
-MCP_API_KEY   = os.getenv("MCP_API_KEY",   "")
+# Transport och autentisering läses av mcp_transport.starta() (MCP_TRANSPORT,
+# MCP_HOST, MCP_PORT, MCP_API_KEY) — inte här.
 
 # SOU-flaggor — styr om SOU-sökning resp. SOU-hämtning/lagring exponeras.
 # Standard: true (fullt funktionell som fristående server).
@@ -85,12 +85,19 @@ log = logging.getLogger(__name__)
 _DB_INIT_PATH = Path(__file__).parent / "db" / "init_db.py"
 
 _store: Optional[DocumentStore] = None
+# Skyddar den lata inläsningen av _store (se _hamta_store). Synkrona
+# MCP-verktyg körs på arbetstrådar i mcp 2.x, så flera anrop kan nå
+# _hamta_store samtidigt.
+_store_lock = threading.Lock()
 
 
 def _hamta_store() -> DocumentStore:
+    """Lazy-laddar DocumentStore-singeltonen. Dubbelkontrollerad låsning."""
     global _store
     if _store is None:
-        _store = DocumentStore()
+        with _store_lock:
+            if _store is None:
+                _store = DocumentStore()
     return _store
 
 
@@ -111,9 +118,18 @@ def _riksdagen_url(dok_id: str, doktyp: str) -> str:
 
 
 def _hamta_json(path: str, params: dict) -> dict:
+    """Hämtar JSON från riksdagens API. Kastar ToolError vid källfel."""
     params["utformat"] = "json"
-    r = httpx.get(f"{API_BASE}{path}", params=params, headers=HEADERS, timeout=30)
-    r.raise_for_status()
+    try:
+        r = httpx.get(f"{API_BASE}{path}", params=params, headers=HEADERS, timeout=30)
+        r.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise ToolError(
+            f"Riksdagens öppna data svarade med fel {exc.response.status_code} "
+            f"för {path}. Källan kan vara nere eller ha ändrat sitt API."
+        ) from exc
+    except httpx.RequestError as exc:
+        raise ToolError(f"Kunde inte nå riksdagens öppna data ({path}): {exc}") from exc
     return r.json()
 
 
@@ -285,7 +301,186 @@ def _formatera_person(p: dict) -> dict:
     }
 
 
-mcp = FastMCP(
+# ── Typade returvärden ──────────────────────────────────────────────────────
+#
+# Fält som saknas i äldre riksdagsdata (dokument från 1800-talet, ledamöter
+# utan registrerat uppdrag osv.) är NotRequired eller | None. Dynamiskt
+# nyckelsatta dict (relationstyp, uppdragstyp) typas som dict[str, Any] —
+# nycklarna är inte kända i förväg, se MIGRERINGSGUIDE.md.
+
+class DokumentTraff(TypedDict):
+    dok_id: str
+    doktyp: str
+    titel: str
+    datum: str
+    rm: str
+    beteckning: str
+    nummer: str
+    referens: str
+    notis: str
+    organ: str
+    pdf_url: str
+    url: str
+    ocr_varning: NotRequired[str]
+
+
+class SokSvar(TypedDict):
+    antal_traffar: int
+    antal_returnerade: int
+    traffar: list[DokumentTraff]
+
+
+class DokumentSvar(TypedDict):
+    dok_id: str
+    doktyp: str
+    titel: str
+    datum: str
+    rm: str
+    status: str | None
+    url_riksdagen: str
+    inledning: str
+    cached: bool
+    ocr_warning: bool
+    antal_stycken: NotRequired[int]
+    inledning_ar_utdrag: NotRequired[bool]
+    las_vidare: NotRequired[str]
+
+
+class ChunkTraff(TypedDict):
+    chunk_index: int
+    text: str
+    tecken_start: int
+    tecken_slut: int
+    score: float
+    tecken_totalt: NotRequired[int]
+    trunkerad: NotRequired[bool]
+
+
+class SokIDokumentSvar(TypedDict):
+    antal_returnerade: int
+    traffar: list[ChunkTraff]
+
+
+class ChunkSvar(TypedDict):
+    dok_id: str
+    chunk_index: int
+    chunk_fran: int
+    chunk_till: int
+    antal_stycken: int
+    tecken_start: int
+    tecken_slut: int
+    text: str
+    tecken_totalt: int
+    tecken_visade: int
+    trunkerad: bool
+    fortsatt_fran_tecken: int | None
+
+
+class KontextSvar(TypedDict):
+    dok_id: str
+    doktyp: str
+    titel: str
+    rm: str
+    relaterade: dict[str, Any]
+    extra: dict[str, Any]
+
+
+class Anforande(TypedDict):
+    anforande_id: str
+    dok_id: str
+    anforande_nummer: str
+    iid: str
+    rel_dok_id: str
+    kammaraktivitet: str
+    talare: str
+    parti: str
+    datum: str
+    rubrik: str
+    anforandetext: str
+    protokoll_url: str
+
+
+class AnforandenSvar(TypedDict):
+    antal_returnerade: int
+    anforanden: list[Anforande]
+
+
+class Votering(TypedDict):
+    votering_id: str
+    namn: str
+    parti: str
+    rost: str
+    beteckning: str
+    punkt: str
+    avser: str
+
+
+class VoteringarSvar(TypedDict):
+    antal_returnerade: int
+    voteringar: list[Votering]
+
+
+class RiksmotenSvar(TypedDict):
+    antal_returnerade: int
+    riksmoten: list[str]
+
+
+class SfsTraff(TypedDict):
+    sfs_nr: str
+    titel: str
+    datum: str
+    dok_id: str
+
+
+class SfsSvar(TypedDict):
+    antal_returnerade: int
+    traffar: list[SfsTraff]
+
+
+class Ledamot(TypedDict):
+    iid: str
+    fornamn: str
+    efternamn: str
+    parti: str
+    valkrets: str
+    status: str
+    url: str
+
+
+class LedamoterSvar(TypedDict):
+    antal_traffar: int
+    antal_returnerade: int
+    ledamoter: list[Ledamot]
+
+
+class LedamotProfil(TypedDict):
+    iid: str
+    fornamn: str
+    efternamn: str
+    parti: str
+    valkrets: str
+    status: str
+    url: str
+    fodd_ar: str
+    kon: str
+    uppdrag: NotRequired[dict[str, Any]]
+
+
+class AktivitetsAnforande(TypedDict):
+    datum: str
+    rubrik: str
+    url: str
+
+
+class LedamotAktivitetSvar(TypedDict):
+    iid: str
+    rm: str
+    anforanden: list[AktivitetsAnforande]
+    motioner: list[DokumentTraff]
+    interpellationer: list[DokumentTraff]
+
+
+mcp = MCPServer(
     "riksdag-oppna-data",
     instructions=(
         "MCP-server för Riksdagens öppna data (1867–idag): propositioner, motioner, "
@@ -302,6 +497,8 @@ mcp = FastMCP(
         "SVARSSTORLEK: textreturnerande verktyg tar max_tecken och fran_tecken; ett "
         "kapat svar bär fälten trunkerad, tecken_totalt och fortsatt_fran_tecken."
     ),
+    version="3.1.0",
+    cache_hints=CACHE_HINTAR,
 )
 
 
@@ -344,7 +541,7 @@ def _skar_ut(text: Optional[str], max_tecken: int, fran_tecken: int = 0) -> dict
     }
 
 
-@mcp.tool()
+@mcp.tool(title="Sök riksdagsdokument", annotations=LASNING_EXTERN)
 def rd_search(
     query: str = "",
     doktyp: str = "",
@@ -354,7 +551,7 @@ def rd_search(
     rm: str = "",
     nummer: str = "",
     sz: int = 10,
-) -> dict:
+) -> SokSvar:
     """
     Soker i riksdagens oppna data efter propositioner, motioner, betankanden,
     protokoll, SOU, Ds och kommittedirektiv.
@@ -394,9 +591,10 @@ def rd_search(
       * For fullstandig relationsoversikt: anvand rd_get_context.
     """
     if not SOU_SOKNING_AKTIV and doktyp.lower() == "sou":
-        return {"fel": "SOU-sokning ar inaktiverad pa denna server "
-                       "(SOU_SOKNING_AKTIV=false i .env). "
-                       "Anvand liu-sou-servern (strom 4) for SOU-sokning."}
+        raise ToolError(
+            "SOU-sökning är inaktiverad på denna server (SOU_SOKNING_AKTIV=false "
+            "i .env). Använd liu-sou-servern (ström 4) för SOU-sökning."
+        )
 
     params: dict = {"sz": min(sz, 100)}
     if query:     params["sok"]    = query
@@ -435,8 +633,14 @@ def rd_search(
     }
 
 
-@mcp.tool()
-def rd_get_document(dok_id: str) -> dict:
+_SOU_HAMTNING_AVSTANGD = (
+    "SOU-hämtning är inaktiverad på denna server (SOU_HAMTNING_AKTIV=false "
+    "i .env). Använd liu-sou-servern (ström 4) för SOU-fulltext."
+)
+
+
+@mcp.tool(title="Hämta riksdagsdokument", annotations=LASNING_EXTERN)
+def rd_get_document(dok_id: str) -> DokumentSvar:
     """
     Hamtar ett riksdagsdokument och cachar det lokalt for semantisk sokning.
 
@@ -453,6 +657,8 @@ def rd_get_document(dok_id: str) -> dict:
     För relationsdata (följdmotioner, behandlande betänkande m.m.):
     använd rd_get_context — relationsdata hämtas alltid färsk därifrån.
     Dokument äldre än ca 1960 kan vara OCR-skannade — se ocr_varning i svaret.
+
+    Kastar ToolError om dok_id är okänt hos riksdagens öppna data.
     """
     if not SOU_HAMTNING_AKTIV:
         store = _hamta_store()
@@ -460,25 +666,30 @@ def rd_get_document(dok_id: str) -> dict:
         if store._giltig_cache(dok_id):
             cached = store._las_fran_cache(dok_id)
             if cached.get("doktyp", "").lower() == "sou":
-                return {"fel": "SOU-hamtning ar inaktiverad pa denna server "
-                                "(SOU_HAMTNING_AKTIV=false i .env). "
-                                "Anvand liu-sou-servern (strom 4) for SOU-fulltext."}
+                raise ToolError(_SOU_HAMTNING_AVSTANGD)
             return cached
         # Inte cachat -- lattiviktskoll via API for att kontrollera doktyp.
         try:
             meta_data = _hamta_json("/dokumentlista/", {"id": dok_id, "sz": 1})
             docs = _normalisera_dokument(meta_data.get("dokumentlista", {}))
             if docs and docs[0].get("doktyp", "").lower() == "sou":
-                return {"fel": "SOU-hamtning ar inaktiverad pa denna server "
-                                "(SOU_HAMTNING_AKTIV=false i .env). "
-                                "Anvand liu-sou-servern (strom 4) for SOU-fulltext."}
-        except Exception:
-            pass  # Om metadatakollen misslyckas, fall igenom till vanlig hamtning
+                raise ToolError(_SOU_HAMTNING_AVSTANGD)
+        except ToolError:
+            raise
+        except Exception as exc:
+            log.debug("Metadatakoll för %s misslyckades: %s. Faller igenom.", dok_id, exc)
 
-    return _berika_med_omfattning(_hamta_store().hamta_dokument(dok_id), dok_id)
+    try:
+        svar = _hamta_store().hamta_dokument(dok_id)
+    except DokumentSaknas as exc:
+        raise ToolError(str(exc)) from exc
+    except KallanSvararInte as exc:
+        raise ToolError(str(exc)) from exc
+
+    return _berika_med_omfattning(svar, dok_id)
 
 
-def _berika_med_omfattning(svar: dict, dok_id: str) -> dict:
+def _berika_med_omfattning(svar: DokumentSvar, dok_id: str) -> DokumentSvar:
     """
     Kompletterar ett dokumentsvar med hur mycket text som faktiskt finns.
 
@@ -486,8 +697,6 @@ def _berika_med_omfattning(svar: dict, dok_id: str) -> dict:
     de första 500 tecknen av något som kan vara hundratals sidor. Fälten visar
     omfattningen och pekar ut vägen vidare.
     """
-    if not isinstance(svar, dict) or svar.get("fel"):
-        return svar
     try:
         antal = _hamta_store().antal_chunkar(dok_id)
     except Exception as exc:
@@ -506,13 +715,13 @@ def _berika_med_omfattning(svar: dict, dok_id: str) -> dict:
     return svar
 
 
-@mcp.tool()
+@mcp.tool(title="Sök inom ett dokument", annotations=LASNING_EXTERN)
 def rd_search_in_document(
     dok_id: str,
     query: str,
     top_k: int = 5,
     max_tecken: int = 0,
-) -> dict:
+) -> SokIDokumentSvar:
     """
     Semantisk sökning inom ett specifikt riksdagsdokument.
 
@@ -533,8 +742,15 @@ def rd_search_in_document(
 
     Varje träff bär sin adress i dokumentet. Vill du läsa vidare före eller
     efter en träff: rd_get_chunk(dok_id, chunk_index, kontext=1).
+
+    Kastar ToolError om dok_id är okänt hos riksdagens öppna data.
     """
-    traffar = _hamta_store().sok_i_dokument(dok_id, query, top_k)
+    try:
+        traffar = _hamta_store().sok_i_dokument(dok_id, query, top_k)
+    except DokumentSaknas as exc:
+        raise ToolError(str(exc)) from exc
+    except KallanSvararInte as exc:
+        raise ToolError(str(exc)) from exc
 
     if max_tecken and max_tecken > 0:
         for t in traffar:
@@ -549,14 +765,14 @@ def rd_search_in_document(
     }
 
 
-@mcp.tool()
+@mcp.tool(title="Hämta textstycke på position", annotations=LASNING_EXTERN)
 def rd_get_chunk(
     dok_id: str,
     chunk_index: int,
     kontext: int = 0,
     max_tecken: int = 0,
     fran_tecken: int = 0,
-) -> dict:
+) -> ChunkSvar:
     """
     Hämtar ett textstycke ur ett riksdagsdokument på styckenummer.
 
@@ -578,6 +794,9 @@ def rd_get_chunk(
     OBS: styckena överlappar med 200 tecken, så slutet av stycke N återkommer
     i början av stycke N+1. Det är avsiktligt — ingen mening ska kunna falla
     mellan två stycken.
+
+    Kastar ToolError om dok_id är okänt, inte cachat sedan tidigare, eller
+    om chunk_index ligger utanför dokumentets stycken.
     """
     kontext = min(max(0, kontext), 5)
     store   = _hamta_store()
@@ -586,31 +805,23 @@ def rd_get_chunk(
         rader = store.hamta_chunkar(
             dok_id, chunk_index - kontext, chunk_index + kontext
         )
-    except Exception as exc:
-        log.error("rd_get_chunk misslyckades (dok_id=%s): %s", dok_id, exc)
-        return {"fel": str(exc), "dok_id": dok_id}
+    except (DokumentSaknas, KallanSvararInte) as exc:
+        raise ToolError(str(exc)) from exc
 
     if not rader:
         # Skilj okänt dokument från giltigt dokument med okänt styckenummer —
         # felmeddelandet ska visa vägen framåt, inte bara konstatera fel.
         antal = store.antal_chunkar(dok_id)
         if not antal:
-            return {
-                "fel": (
-                    f"Dokumentet '{dok_id}' har inga cachade textstycken. "
-                    "Hämta det först med rd_get_document(dok_id), som indexerar "
-                    "dokumentet lokalt."
-                ),
-                "dok_id": dok_id,
-            }
-        return {
-            "fel": (
-                f"Dokumentet '{dok_id}' har inget textstycke med chunk_index "
-                f"{chunk_index}. Dokumentet har {antal} stycken (numrerade från 0)."
-            ),
-            "dok_id":       dok_id,
-            "antal_stycken": antal,
-        }
+            raise ToolError(
+                f"Dokumentet '{dok_id}' har inga cachade textstycken. "
+                "Hämta det först med rd_get_document(dok_id), som indexerar "
+                "dokumentet lokalt."
+            )
+        raise ToolError(
+            f"Dokumentet '{dok_id}' har inget textstycke med chunk_index "
+            f"{chunk_index}. Dokumentet har {antal} stycken (numrerade från 0)."
+        )
 
     text   = "\n\n".join(r["text"] or "" for r in rader)
     utdrag = _skar_ut(text, max_tecken, fran_tecken)
@@ -627,8 +838,8 @@ def rd_get_chunk(
     }
 
 
-@mcp.tool()
-def rd_get_context(dok_id: str) -> dict:
+@mcp.tool(title="Hämta kontextpaket för dokument", annotations=LASNING_EXTERN)
+def rd_get_context(dok_id: str) -> KontextSvar:
     """
     Hamtar ett fullstandigt kontextpaket for ett riksdagsdokument.
 
@@ -660,17 +871,24 @@ def rd_get_context(dok_id: str) -> dict:
     protokollet dar debatten agde rum, och rd_search_in_document for att
     hitta relevanta stycken i protokollet.
     Nyligen inlamnade fragor saknar svar tills de besvarats.
+
+    Kastar ToolError om dok_id är okänt hos riksdagens öppna data.
     """
-    return _hamta_store().hamta_relaterade(dok_id)
+    try:
+        return _hamta_store().hamta_relaterade(dok_id)
+    except DokumentSaknas as exc:
+        raise ToolError(str(exc)) from exc
+    except KallanSvararInte as exc:
+        raise ToolError(str(exc)) from exc
 
 
-@mcp.tool()
+@mcp.tool(title="Hämta debattinlägg", annotations=LASNING_EXTERN)
 def rd_get_anforanden(
     rm: str,
     talare: str = "",
     parti: str = "",
     sz: int = 20,
-) -> dict:
+) -> AnforandenSvar:
     """
     Hamtar debattinlagg (anforanden) fran riksdagen med fulltext.
 
@@ -712,8 +930,10 @@ def rd_get_anforanden(
                     if child.tag == "anforandetext" and child.text:
                         fulltext = child.text.strip()
                         break
-        except Exception:
-            pass
+        except Exception as exc:
+            # Enskilt anförande som inte går att hämta ska inte fälla hela
+            # svaret — resten av träffarna är fortfarande användbara.
+            log.debug("Kunde inte hämta fulltext för anförande %s: %s", anf_id, exc)
         results.append({
             "anforande_id":     anf.get("anforande_id", ""),
             "dok_id":           dok_id,
@@ -735,12 +955,12 @@ def rd_get_anforanden(
     }
 
 
-@mcp.tool()
+@mcp.tool(title="Hämta voteringsdata", annotations=LASNING_EXTERN)
 def rd_get_voteringar(
     rm: str,
     bet: str = "",
     sz: int = 100,
-) -> dict:
+) -> VoteringarSvar:
     """
     Hamtar voteringsdata fran riksdagen.
 
@@ -790,8 +1010,8 @@ def rd_get_voteringar(
     }
 
 
-@mcp.tool()
-def rd_list_riksmoten() -> dict:
+@mcp.tool(title="Lista riksmöten", annotations=LASNING_DB)
+def rd_list_riksmoten() -> RiksmotenSvar:
     """
     Returnerar en komplett lista med riksmoten fran 1867 till idag, senast forst.
 
@@ -831,8 +1051,8 @@ def rd_list_riksmoten() -> dict:
     }
 
 
-@mcp.tool()
-def rd_resolve_sfs(query: str) -> dict:
+@mcp.tool(title="Slå upp SFS-nummer", annotations=LASNING_EXTERN)
+def rd_resolve_sfs(query: str) -> SfsSvar:
     """
     Slar upp SFS-nummer for en lag via namn eller sokterm.
 
@@ -863,7 +1083,7 @@ def rd_resolve_sfs(query: str) -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(title="Sök riksdagsledamöter", annotations=LASNING_EXTERN)
 def rd_search_ledamoter(
     efternamn: str = "",
     fornamn: str = "",
@@ -871,7 +1091,7 @@ def rd_search_ledamoter(
     valkrets: str = "",
     status: str = "",
     sz: int = 30,
-) -> dict:
+) -> LedamoterSvar:
     """
     Soker riksdagsledamoter pa namn, parti, valkrets eller status.
 
@@ -911,8 +1131,8 @@ def rd_search_ledamoter(
     }
 
 
-@mcp.tool()
-def rd_get_ledamot(iid: str) -> dict:
+@mcp.tool(title="Hämta ledamotsprofil", annotations=LASNING_EXTERN)
+def rd_get_ledamot(iid: str) -> LedamotProfil:
     """
     Hamtar fullstandig profil for en riksdagsledamot.
 
@@ -924,12 +1144,14 @@ def rd_get_ledamot(iid: str) -> dict:
 
     Uppdragslistan ar grupperad efter uppdragstyp och inkluderar tidsperioder
     sa att man kan se nar ledamoten suttit i vilka organ.
+
+    Kastar ToolError om iid är okänt.
     """
     data    = _hamta_json("/personlista/", {"iid": iid})
     pl      = data.get("personlista", {})
     persons = _normalisera_personer(pl)
     if not persons:
-        return {"fel": f"Hittade ingen ledamot med iid={iid}"}
+        raise ToolError(f"Hittade ingen ledamot med iid={iid}.")
 
     p      = persons[0]
     result = _formatera_person(p)
@@ -959,12 +1181,12 @@ def rd_get_ledamot(iid: str) -> dict:
     return result
 
 
-@mcp.tool()
+@mcp.tool(title="Hämta ledamots aktivitet", annotations=LASNING_EXTERN)
 def rd_get_ledamot_aktivitet(
     iid: str,
     rm: str = "",
     sz: int = 20,
-) -> dict:
+) -> LedamotAktivitetSvar:
     """
     Hamtar en riksdagsledamots senaste parlamentariska aktivitet.
 
@@ -1031,93 +1253,40 @@ def rd_get_ledamot_aktivitet(
     }
 
 
-# ── HTTP-autentisering ────────────────────────────────────────────────────────
+# ── Initiering och startpunkt ─────────────────────────────────────────────────
 
-def _make_auth_app(asgi_app, api_key: str):
+def _initiera_databas() -> None:
     """
-    Wrappa en ASGI-app med enkel Bearer-token-autentisering.
-    Alla anrop utan korrekt Authorization-header avvisas med HTTP 401.
+    Kör db/init_db.py:s idempotenta schema-init.
+
+    Anropas av starta() i båda transportlägena, omslutet i try/except där —
+    servern ska gå upp även om databasen är nere; verktygsanropen felar då
+    med ett begripligt meddelande i stället för att servern saknas helt.
     """
-    from starlette.applications import Starlette
-    from starlette.middleware import Middleware
-    from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.responses import PlainTextResponse
-    from starlette.routing import Mount
-
-    class ApiKeyMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request, call_next):
-            token = (
-                request.headers.get("Authorization", "")
-                .removeprefix("Bearer ")
-                .strip()
-            )
-            # secrets.compare_digest ger konstant-tidsjämförelse (skyddar mot timing-attack).
-            if not secrets.compare_digest(token, api_key):
-                return PlainTextResponse(
-                    "Obehörig: ogiltig eller saknad API-nyckel.", status_code=401
-                )
-            return await call_next(request)
-
-    return Starlette(
-        routes=[Mount("/", app=asgi_app)],
-        middleware=[Middleware(ApiKeyMiddleware)],
-    )
+    import importlib.util as _ilu
+    spec = _ilu.spec_from_file_location("init_db", _DB_INIT_PATH)
+    mod  = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        log.error("DATABASE_URL saknas i .env — schema-init hoppas över. "
+                  "Lägg till DATABASE_URL innan servern kan använda databasen.")
+        return
+    mod.initiera_schema(db_url)
+    log.info("Schema initierat.")
 
 
-# ── Startpunkt ────────────────────────────────────────────────────────────────
+def _forvarm_http() -> None:
+    """
+    Preladdar embeddingmodellen innan http-transporten tar emot anrop.
+
+    I stdio-läget laddas modellen i stället lat vid första sökanropet, så att
+    klienten inte väntar på den vid uppstart.
+    """
+    log.info("Preladdar embedding-modell...")
+    _hamta_store()._hamta_modell()
+    log.info("Embedding-modell redo.")
+
 
 if __name__ == "__main__":
-    # Schema-init (idempotent, trygg mot DB-fel vid uppstart).
-    # Om databasen är nere startar servern ändå — init körs nästa gång.
-    try:
-        import importlib.util as _ilu
-        _spec = _ilu.spec_from_file_location("init_db", _DB_INIT_PATH)
-        _mod  = _ilu.module_from_spec(_spec)
-        _spec.loader.exec_module(_mod)
-        _db_url = os.getenv("DATABASE_URL")
-        if not _db_url:
-            log.error("DATABASE_URL saknas i .env — schema-init hoppas over. "
-                      "Lagg till DATABASE_URL innan servern kan anvanda databasen.")
-        else:
-            _mod.initiera_schema(_db_url)
-            log.info("Schema initierat.")
-    except Exception as _e:
-        log.warning("Schema-init misslyckades (%s) — servern startar ändå.", _e)
-
-    if MCP_TRANSPORT == "http":
-        import uvicorn
-
-        # Preladda embedding-modellen vid uppstart så att första anropet svarar
-        # lika snabbt som efterföljande. Misslyckas modellen att laddas syns det
-        # direkt i loggarna — inte vid det första användaranropet.
-        log.info("Preladdar embedding-modell...")
-        _hamta_store()._hamta_modell()
-        log.info("Embedding-modell redo")
-
-        # Hämta ASGI-appen från FastMCP
-        try:
-            asgi_app = mcp.streamable_http_app()
-        except AttributeError:
-            # Äldre version av mcp-biblioteket
-            log.warning(
-                "mcp.streamable_http_app() saknas — försöker med sse_app(). "
-                "Uppgradera mcp-paketet om problem uppstår."
-            )
-            asgi_app = mcp.sse_app()
-
-        if MCP_API_KEY:
-            log.info("API-nyckelautentisering aktiverad")
-            app = _make_auth_app(asgi_app, MCP_API_KEY)
-        else:
-            log.warning(
-                "MCP_API_KEY är inte satt — servern körs utan autentisering. "
-                "Bind enbart till loopback (MCP_HOST=127.0.0.1) eller "
-                "skydda via reverse proxy."
-            )
-            app = asgi_app
-
-        log.info("Startar HTTP-transport på %s:%s", MCP_HOST, MCP_PORT)
-        uvicorn.run(app, host=MCP_HOST, port=MCP_PORT, log_level="info")
-    else:
-        log.info("Startar stdio-transport (lokal användning)")
-        mcp.run()
+    starta(mcp, standardport=8000, initiera=_initiera_databas, forvarm_http=_forvarm_http)

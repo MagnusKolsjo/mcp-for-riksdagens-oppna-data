@@ -2,7 +2,7 @@
 # Installera: pip install -r requirements.txt
 
 # MCP-server
-mcp>=1.0.0
+mcp>=2.0,<3
 
 # HTTP-anrop mot riksdagens API
 httpx>=0.27.0

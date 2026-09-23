@@ -27,6 +27,7 @@ alltid en länk till PDF-originalet.
 ## Krav
 
 - Python 3.11 eller senare
+- `mcp` 2.x (`mcp>=2.0,<3`)
 - PostgreSQL med pgvector-tillägget, eller SQLite med sqlite-vec
 - Beroenden enligt `requirements.txt`
 
@@ -100,6 +101,27 @@ Nedan visas ett konfigurationsexempel för Claude Desktop (`claude_desktop_confi
 ```
 
 Starta om MCP-klienten så ansluter den till servern automatiskt.
+
+## HTTP-läge
+
+Servern kan även köras som en delad http-tjänst bakom en reverse proxy, i
+stället för att MCP-klienten startar processen direkt:
+
+```bash
+MCP_TRANSPORT=http MCP_API_KEY=<en-stark-nyckel> python3 mcp_server.py
+```
+
+| Variabel | Standardvärde | Beskrivning |
+|---|---|---|
+| `MCP_TRANSPORT` | `stdio` | `stdio` eller `http` |
+| `MCP_HOST` | `127.0.0.1` | Bindningsadress i http-läge |
+| `MCP_PORT` | `8000` | Port i http-läge |
+| `MCP_API_KEY` | *(krävs i http-läge)* | Bearer-nyckel för autentisering |
+
+**http-läget är fail-closed:** uppstarten avbryts med exitkod 2 om `MCP_API_KEY`
+saknas. Servern lyssnar på `http://<MCP_HOST>:<MCP_PORT>/mcp` och kräver
+`Authorization: Bearer <MCP_API_KEY>` på alla anrop. I produktion: lägg en
+reverse proxy (t.ex. Nginx) framför servern.
 
 ## Tillgängliga verktyg
 

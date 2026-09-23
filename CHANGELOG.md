@@ -4,6 +4,66 @@ Alla betydande ändringar dokumenteras här.
 Formatet följer [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Ändrat
+
+- **Migrerad till `mcp` 2.x** (`mcp>=2.0,<3`, verifierat mot 2.2.0). `FastMCP`
+  ersatt av `MCPServer` från `mcp.server.mcpserver`. Servern har fått en
+  `version` ur den senast släppta CHANGELOG-posten och `cache_hints` för
+  `tools/list`.
+- Egna kopior av `mcp_transport.py` och `mcp_annotationer.py` (delade mallar
+  för projektets MCP-servrar) tillagda i repots rot. All transportlogik
+  (stdio/http-val, schema-init, förladdning av embeddingmodellen i http-läge)
+  flyttad dit; `mcp_server.py` anropar bara `starta(...)`.
+- Alla 12 verktyg har nu `title=` och `annotations=` (läsning mot extern
+  källa/cache, eller läsning utan extern källa för `rd_list_riksmoten`).
+- Verktygens returvärden är typade (`TypedDict`) i stället för `-> dict`, så
+  att `outputSchema` genereras och svaren valideras. Fält som kan saknas i
+  äldre riksdagsdata (dokument från 1800-talet, ledamöter utan uppdrag) är
+  `NotRequired`/`| None`. Dynamiskt nyckelsatta fält (`relaterade`, `extra`,
+  `uppdrag`) är `dict[str, Any]`.
+- Verktyg som fick ett förväntat fel (okänt `dok_id`, okänt `iid`, SOU
+  inaktiverat på servern) kastar nu `ToolError` med ett begripligt svenskt
+  meddelande, i stället för att returnera `{"fel": ...}` som text eller
+  krascha okontrollerat.
+- `document_store.py`: `_hamta_fran_api` och `_hamta_dokumentstatus` skiljer
+  nu `DokumentSaknas` (HTTP 404 från `data.riksdagen.se`) från
+  `KallanSvararInte` (andra HTTP-fel eller anslutningsfel), så att
+  `mcp_server.py` kan kasta rätt `ToolError`.
+- `document_store.py`: `datum` normaliseras alltid till `str` innan det
+  returneras (PostgreSQL ger `datetime.date` för `DATE`-kolumnen, SQLite ger
+  `str`); `titel`, `rm`, `url_riksdagen` och `inledning` normaliseras till
+  tom sträng om de är `NULL` i databasen. Utan detta misslyckades typade
+  MCP-svar mot äldre eller ofullständigt indexerade rader.
+
+### Rättat
+
+- `db/init_db.py`: `main()` skrev tidigare ut hela `DATABASE_URL`, inklusive
+  Postgres-lösenordet, i klartext vid manuell körning eller vid ett okänt
+  URL-format. Lösenordet maskeras nu (`_maskera_url`).
+
+### Trådsäkerhet
+
+- `_hamta_store()` i `mcp_server.py` och `_hamta_modell()` i
+  `document_store.py` (lat inläsning av `DocumentStore`-singeltonen
+  respektive embeddingmodellen) skyddas nu av `threading.Lock` med
+  dubbelkontrollerad låsning. Synkrona verktyg körs på arbetstrådar i
+  mcp 2.x, så flera anrop kan annars nå den lata inläsningen samtidigt.
+
+### Brytande ändringar
+
+- **http-läget kräver nu `MCP_API_KEY`** (fail-closed). Tidigare startade
+  servern i http-läge utan nyckel, med en varning i loggen. Uppstarten
+  avbryts nu med exitkod 2 om nyckeln saknas.
+- Verktyg som tidigare returnerade `{"fel": "..."}` som ett vanligt textsvar
+  (`rd_search`, `rd_get_document`, `rd_get_chunk`, `rd_get_ledamot`) rapporterar
+  nu felet som `isError: true` via `ToolError`. Klienter som läste `fel`-fältet
+  i svarstexten måste läsa protokollets felfält i stället.
+- SSE-transport och den egna `_make_auth_app`-wrappern (Starlette + Bearer-
+  middleware i `mcp_server.py`) är borttagna. http-läget körs nu enbart via
+  `mcp_transport.starta(...)` (Streamable HTTP).
+
 ## [3.1.0] — 2026-08-10
 
 ### Tillagt

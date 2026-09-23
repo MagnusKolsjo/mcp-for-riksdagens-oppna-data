@@ -660,6 +660,17 @@ class DocumentStore:
 
         keys   = ["dok_id", "doktyp", "titel", "datum", "rm", "status", "url_riksdagen", "inledning"]
         result = dict(zip(keys, row))
+        # PostgreSQL ger `datum` som datetime.date (kolumnen är DATE), SQLite
+        # som str. API:et returnerar alltid str — normalisera så svaret är
+        # samma oavsett backend, och så typade MCP-verktygssvar (str) håller.
+        if result.get("datum") is not None and not isinstance(result["datum"], str):
+            result["datum"] = str(result["datum"])
+        # titel, rm, url_riksdagen och inledning är nullable i schemat (t.ex.
+        # gamla eller ofullständigt indexerade rader) men typas som str i
+        # MCP-svaret — NULL blir tom sträng i stället för att fälla anropet.
+        for falt in ("titel", "rm", "url_riksdagen", "inledning"):
+            if result.get(falt) is None:
+                result[falt] = ""
         result["cached"]      = True
         result["ocr_warning"] = result.get("status") == "ocr"
 
