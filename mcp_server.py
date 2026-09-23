@@ -306,7 +306,7 @@ def _formatera_person(p: dict) -> dict:
 # Fält som saknas i äldre riksdagsdata (dokument från 1800-talet, ledamöter
 # utan registrerat uppdrag osv.) är NotRequired eller | None. Dynamiskt
 # nyckelsatta dict (relationstyp, uppdragstyp) typas som dict[str, Any] —
-# nycklarna är inte kända i förväg, se MIGRERINGSGUIDE.md.
+# nycklarna är inte kända i förväg.
 
 class DokumentTraff(TypedDict):
     dok_id: str
@@ -593,7 +593,7 @@ def rd_search(
     if not SOU_SOKNING_AKTIV and doktyp.lower() == "sou":
         raise ToolError(
             "SOU-sökning är inaktiverad på denna server (SOU_SOKNING_AKTIV=false "
-            "i .env). Använd liu-sou-servern (ström 4) för SOU-sökning."
+            "i .env). Använd liu-sou-servern för SOU-sökning."
         )
 
     params: dict = {"sz": min(sz, 100)}
@@ -635,7 +635,7 @@ def rd_search(
 
 _SOU_HAMTNING_AVSTANGD = (
     "SOU-hämtning är inaktiverad på denna server (SOU_HAMTNING_AKTIV=false "
-    "i .env). Använd liu-sou-servern (ström 4) för SOU-fulltext."
+    "i .env). Använd liu-sou-servern för SOU-fulltext."
 )
 
 
