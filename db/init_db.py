@@ -20,6 +20,7 @@ Krav (SQLite):
 """
 
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -31,6 +32,11 @@ load_dotenv(Path(__file__).parent / '.env')
 # DATABASE_URL utan default — ett odefinierat val ger tydligt felmeddelande i main().
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 SCHEMA_DIR   = Path(__file__).parent
+
+
+def _maskera_url(url: str) -> str:
+    """Maskerar lösenordsdelen i en databas-URL för säker loggning/utskrift."""
+    return re.sub(r"://([^:]+):([^@]+)@", r"://\1:***@", url)
 
 
 def init_postgres(url: str) -> None:
@@ -122,7 +128,7 @@ def initiera_schema(url: str) -> None:
         init_sqlite(url)
     else:
         raise ValueError(
-            f"Okänt DATABASE_URL-format: {url!r}\n"
+            f"Okänt DATABASE_URL-format: {_maskera_url(url)!r}\n"
             "Ange antingen postgresql://... eller sqlite:///..."
         )
 
@@ -136,7 +142,7 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    print(f"DATABASE_URL: {DATABASE_URL}")
+    print(f"DATABASE_URL: {_maskera_url(DATABASE_URL)}")
     try:
         initiera_schema(DATABASE_URL)
     except ValueError as e:
