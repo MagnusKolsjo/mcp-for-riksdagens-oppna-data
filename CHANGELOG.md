@@ -53,6 +53,13 @@ Versionshanteringen följer [Semantic Versioning](https://semver.org/).
   aktivitet" snarare än att källan inte gick att nå. `ToolError` återkastas
   nu i stället för att tystas; andra oväntade fel (t.ex. en ändrad svarsform)
   degraderar fortfarande till en tom lista för just den delen.
+- `rd_get_anforanden` kunde hämta fulltext för upp till 75 anföranden och
+  skicka svaret dubbelt (text + `structuredContent`), vilket kunde närma sig
+  MCP:s 1 MB-gräns. Infört tak på total textmängd (`_ANFORANDEN_TECKENTAK`,
+  ca 300 000 tecken sammanlagd `anforandetext`); vid taket avbryts hämtningen
+  och `trunkerad`, `antal_utelamnade` och `las_vidare` markerar det i svaret.
+  `sz` styr fortfarande hur många anföranden som hämtas från källan, inte hur
+  många som ryms i svaret.
 
 ### Trådsäkerhet
 

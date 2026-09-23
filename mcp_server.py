@@ -403,6 +403,9 @@ class Anforande(TypedDict):
 class AnforandenSvar(TypedDict):
     antal_returnerade: int
     anforanden: list[Anforande]
+    trunkerad: NotRequired[bool]
+    antal_utelamnade: NotRequired[int]
+    las_vidare: NotRequired[str]
 
 
 class Votering(TypedDict):
@@ -882,6 +885,14 @@ def rd_get_context(dok_id: str) -> KontextSvar:
         raise ToolError(str(exc)) from exc
 
 
+# Tak för den sammanlagda längden av anforandetext i ett rd_get_anforanden-svar.
+# Svaret skickas både som text och som strukturerat innehåll, så ett osnävt
+# svar med många långa debattinlägg kan annars närma sig MCP:s 1 MB-gräns.
+# sz styr hur många anföranden som hämtas från källan — det här styr bara hur
+# många som ryms i svaret.
+_ANFORANDEN_TECKENTAK = 300_000
+
+
 @mcp.tool(title="Hämta debattinlägg", annotations=LASNING_EXTERN)
 def rd_get_anforanden(
     rm: str,
@@ -905,6 +916,11 @@ def rd_get_anforanden(
                              intressent_id), rel_dok_id, kammaraktivitet, talare,
                              parti, datum, rubrik, anforandetext (ren text, HTML-strippad),
                              protokoll_url.
+
+    Den sammanlagda langden av anforandetext ar begransad (ca 300 000 tecken).
+    Nas taket avbryts hamtningen dar — svaret far da trunkerad=True,
+    antal_utelamnade och en las_vidare-text. Filtrera hardare (talare/parti)
+    eller sank sz for att fa fler anroparen inom taket.
     """
     params: dict = {"rm": rm, "sz": min(sz, 75)}
     if talare: params["talare"] = talare
@@ -916,8 +932,14 @@ def rd_get_anforanden(
     if isinstance(anf_list, dict):
         anf_list = [anf_list]
 
-    results = []
-    for anf in anf_list:
+    results: list = []
+    tecken_totalt = 0
+    for i, anf in enumerate(anf_list):
+        if tecken_totalt >= _ANFORANDEN_TECKENTAK:
+            # Taket är nått — hämta inte fulltext för resten heller (sparar
+            # onödiga anrop mot källan för poster som ändå utesluts).
+            break
+
         dok_id = anf.get("dok_id", "")
         nr     = anf.get("anforande_nummer", "")
         anf_id = f"{dok_id}-{nr}"
@@ -934,6 +956,8 @@ def rd_get_anforanden(
             # Enskilt anförande som inte går att hämta ska inte fälla hela
             # svaret — resten av träffarna är fortfarande användbara.
             log.debug("Kunde inte hämta fulltext för anförande %s: %s", anf_id, exc)
+        anforandetext = _strippa_html(fulltext) if fulltext else ""
+        tecken_totalt += len(anforandetext)
         results.append({
             "anforande_id":     anf.get("anforande_id", ""),
             "dok_id":           dok_id,
@@ -945,14 +969,25 @@ def rd_get_anforanden(
             "parti":            anf.get("parti", ""),
             "datum":            anf.get("dok_datum", ""),
             "rubrik":           anf.get("avsnittsrubrik", ""),
-            "anforandetext":    _strippa_html(fulltext) if fulltext else "",
+            "anforandetext":    anforandetext,
             "protokoll_url":    anf.get("protokoll_url_www", ""),
         })
 
-    return {
+    svar: AnforandenSvar = {
         "antal_returnerade": len(results),
         "anforanden":        results,
     }
+    antal_utelamnade = len(anf_list) - len(results)
+    if antal_utelamnade > 0:
+        svar["trunkerad"]        = True
+        svar["antal_utelamnade"] = antal_utelamnade
+        svar["las_vidare"] = (
+            f"Taket på {_ANFORANDEN_TECKENTAK} tecken sammanlagd anforandetext "
+            f"nåddes — {antal_utelamnade} anförande(n) uteslöts ur svaret. "
+            "Filtrera hårdare med talare/parti eller sänk sz för att få fler "
+            "anföranden inom taket per anrop."
+        )
+    return svar
 
 
 @mcp.tool(title="Hämta voteringsdata", annotations=LASNING_EXTERN)
