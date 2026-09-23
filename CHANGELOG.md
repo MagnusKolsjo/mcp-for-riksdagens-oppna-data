@@ -42,6 +42,17 @@ Versionshanteringen följer [Semantic Versioning](https://semver.org/).
 - `db/init_db.py`: `main()` skrev tidigare ut hela `DATABASE_URL`, inklusive
   Postgres-lösenordet, i klartext vid manuell körning eller vid ett okänt
   URL-format. Lösenordet maskeras nu (`_maskera_url`).
+- `db/init_db.py`: `init_postgres`/`init_sqlite` skrev statusmeddelanden till
+  stdout. De körs via `starta(initiera=...)` innan stdio-transporten tar över
+  stdout som sin protokollkanal, så texten kunde blanda sig med JSON-RPC-
+  strömmen. Skriver nu till stderr.
+- `rd_get_ledamot_aktivitet` fångade `Exception` brett kring var och en av de
+  tre deldelarna (anföranden, motioner, interpellationer), vilket även
+  fångade det `ToolError` som `_hamta_json` kastar vid källfel (t.ex. HTTP
+  503) — svaret blev tre tomma listor utan `isError`, vilket ser ut som "ingen
+  aktivitet" snarare än att källan inte gick att nå. `ToolError` återkastas
+  nu i stället för att tystas; andra oväntade fel (t.ex. en ändrad svarsform)
+  degraderar fortfarande till en tom lista för just den delen.
 
 ### Trådsäkerhet
 

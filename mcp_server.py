@@ -1223,7 +1223,13 @@ def rd_get_ledamot_aktivitet(
             }
             for a in (anf_list or [])
         ]
-    except Exception:
+    except ToolError:
+        # _hamta_json signalerar ett källfel (t.ex. HTTP 503) med ToolError —
+        # det ska nå anroparen som ett fel, inte tystas till en tom lista som
+        # ser ut som "ingen aktivitet".
+        raise
+    except Exception as exc:
+        log.debug("Kunde inte hämta anföranden för iid=%s: %s", iid, exc)
         anforanden = []
 
     # Motioner
@@ -1232,7 +1238,10 @@ def rd_get_ledamot_aktivitet(
         mot_params["doktyp"] = "mot"
         mot_data   = _hamta_json("/dokumentlista/", mot_params)
         motioner   = [_formatera_dokument(d) for d in _normalisera_dokument(mot_data["dokumentlista"])]
-    except Exception:
+    except ToolError:
+        raise
+    except Exception as exc:
+        log.debug("Kunde inte hämta motioner för iid=%s: %s", iid, exc)
         motioner = []
 
     # Interpellationer
@@ -1241,7 +1250,10 @@ def rd_get_ledamot_aktivitet(
         ip_params["doktyp"] = "ip"
         ip_data             = _hamta_json("/dokumentlista/", ip_params)
         interpellationer    = [_formatera_dokument(d) for d in _normalisera_dokument(ip_data["dokumentlista"])]
-    except Exception:
+    except ToolError:
+        raise
+    except Exception as exc:
+        log.debug("Kunde inte hämta interpellationer för iid=%s: %s", iid, exc)
         interpellationer = []
 
     return {
