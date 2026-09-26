@@ -50,7 +50,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 # Projektidentifierande UA — samma sträng som mcp_server.py använder.
 HEADERS = {
-    "User-Agent": "mcp-for-riksdagens-oppna-data/1.0 (+https://github.com/MagnusKolsjo/mcp-for-riksdagens-oppna-data)",
+    "User-Agent": "mcp-for-riksdagens-oppna-data/4.0 (+https://github.com/MagnusKolsjo/mcp-for-riksdagens-oppna-data)",
 }
 
 # EMBEDDING_MODELL är det aktuella variabelnamnet.

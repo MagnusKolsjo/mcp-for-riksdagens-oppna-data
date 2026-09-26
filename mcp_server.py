@@ -61,7 +61,7 @@ PAGE_SIZE = int(os.getenv("RIKSDAG_PAGE_SIZE", 10))
 # alla anrop mot data.riksdagen.se så att Riksdagsförvaltningens drift-team
 # kan se att förfrågningar kommer från denna MCP-server.
 HEADERS = {
-    "User-Agent": "mcp-for-riksdagens-oppna-data/1.0 (+https://github.com/MagnusKolsjo/mcp-for-riksdagens-oppna-data)",
+    "User-Agent": "mcp-for-riksdagens-oppna-data/4.0 (+https://github.com/MagnusKolsjo/mcp-for-riksdagens-oppna-data)",
 }
 
 # Transport och autentisering läses av mcp_transport.starta() (MCP_TRANSPORT,
@@ -500,7 +500,7 @@ mcp = MCPServer(
         "SVARSSTORLEK: textreturnerande verktyg tar max_tecken och fran_tecken; ett "
         "kapat svar bär fälten trunkerad, tecken_totalt och fortsatt_fran_tecken."
     ),
-    version="3.1.0",
+    version="4.0.0",
     cache_hints=CACHE_HINTAR,
 )
 

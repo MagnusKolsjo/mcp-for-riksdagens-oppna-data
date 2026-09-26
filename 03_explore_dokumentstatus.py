@@ -26,7 +26,7 @@ load_dotenv()
 
 API_BASE = os.getenv("RIKSDAG_API_BASE", "https://data.riksdagen.se")
 
-HEADERS = {"User-Agent": "mcp-for-riksdagens-oppna-data/1.0 (+https://github.com/MagnusKolsjo/mcp-for-riksdagens-oppna-data)"}
+HEADERS = {"User-Agent": "mcp-for-riksdagens-oppna-data/4.0 (+https://github.com/MagnusKolsjo/mcp-for-riksdagens-oppna-data)"}
 
 # Representativa dokument att undersöka
 TESTDOKUMENT = {

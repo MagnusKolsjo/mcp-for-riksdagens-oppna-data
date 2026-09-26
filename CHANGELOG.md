@@ -6,8 +6,11 @@ Versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [4.0.0] — 2026-09-26
+
 ### Ändrat
 
+- User-Agent-strängen följer huvudversionen: `mcp-for-riksdagens-oppna-data/4.0`.
 - **Migrerad till `mcp` 2.x** (`mcp>=2.0,<3`, verifierat mot 2.2.0). `FastMCP`
   ersatt av `MCPServer` från `mcp.server.mcpserver`. Servern har fått en
   `version` ur den senast släppta CHANGELOG-posten och `cache_hints` för
