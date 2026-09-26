@@ -64,7 +64,7 @@ echo ""
 echo "2. Initiera databasen:"
 echo "     $DEST/.venv/bin/python $DEST/db/init_db.py"
 echo ""
-echo "3. Registrera servern i din MCP-klient (exempel för Claude Desktop):"
+echo "3. Registrera servern i din MCP-klient (exempel i formatet mcpServers):"
 echo '     {'
 echo '       "mcpServers": {'
 echo '         "riksdag": {'
