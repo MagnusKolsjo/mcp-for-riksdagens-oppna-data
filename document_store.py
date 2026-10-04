@@ -579,10 +579,18 @@ class DocumentStore:
                     self._model = SentenceTransformer(EMBEDDING_MODELL)
         return self._model
 
+    # PyTorchs MPS-backend är inte trådsäker: MetalShaderLibrary fyller sina
+    # kärncacher utan lås första gången de används, så två samtidiga encode()
+    # från arbetstrådarna kan korrumpera dem och krascha hela processen med
+    # SIGSEGV. Låset ligger på klassen så att det gäller hela processen, även
+    # om flera instanser skulle skapas.
+    _encode_lock = threading.Lock()
+
     def _badda_in(self, texts: list[str]) -> list:
         """Returnerar lista av numpy-vektorer för given lista av texter."""
         model = self._hamta_modell()
-        return model.encode(texts, show_progress_bar=False, normalize_embeddings=True)
+        with DocumentStore._encode_lock:
+            return model.encode(texts, show_progress_bar=False, normalize_embeddings=True)
 
     # ------------------------------------------------------------------
     # Cache-validering
