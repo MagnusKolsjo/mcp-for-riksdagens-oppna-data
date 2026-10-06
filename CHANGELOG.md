@@ -6,6 +6,8 @@ Versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [4.0.1] — 2026-10-06
+
 ### Fixat
 
 - Samtidiga sökanrop kunde krascha servern med SIGSEGV när embeddingmodellen kördes på

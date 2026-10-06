@@ -500,7 +500,7 @@ mcp = MCPServer(
         "SVARSSTORLEK: textreturnerande verktyg tar max_tecken och fran_tecken; ett "
         "kapat svar bär fälten trunkerad, tecken_totalt och fortsatt_fran_tecken."
     ),
-    version="4.0.0",
+    version="4.0.1",
     cache_hints=CACHE_HINTAR,
 )
 
